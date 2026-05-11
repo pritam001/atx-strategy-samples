@@ -77,7 +77,17 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
                                     context,
                                     confidence,
                                     SetupType.CONTINUATION,
-                                    "Doflamingo Ichimoku span-A over candle-high exit"
+                                    "Doflamingo Ichimoku span-A over candle-high exit",
+                                    List.of(DoflamingoSignalSupport.condition(
+                                            "span-a-over-high",
+                                            "Present Span A over candle high",
+                                            "Ichimoku Span A",
+                                            ichimoku.presentSpanA(),
+                                            ">",
+                                            "Candle high",
+                                            current.ohlcv().high().doubleValue(),
+                                            true
+                                    ))
                             )),
                             List.of()
                     );
@@ -112,7 +122,16 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
                 confidence,
                 SetupType.CONTINUATION,
                 null,
-                "Doflamingo Ichimoku cloud momentum entry"
+                "Doflamingo Ichimoku cloud momentum entry",
+                List.of(
+                        DoflamingoSignalSupport.condition("low-above-span-b", "Candle low above present Span B", "Candle low", current.ohlcv().low().doubleValue(), ">", "Ichimoku Span B", ichimoku.presentSpanB(), true),
+                        DoflamingoSignalSupport.condition("ema-above-span-a", "EMA(9) above present Span A", "EMA(9)", maybeEma9.getAsDouble(), ">", "Ichimoku Span A", ichimoku.presentSpanA(), true),
+                        DoflamingoSignalSupport.condition("span-b-above-span-a", "Present Span B above present Span A", "Ichimoku Span B", ichimoku.presentSpanB(), ">", "Ichimoku Span A", ichimoku.presentSpanA(), true),
+                        DoflamingoSignalSupport.condition("future-span-a-above-b", "Future Span A above Future Span B", "Future Span A", ichimoku.futureSpanA(), ">", "Future Span B", ichimoku.futureSpanB(), true),
+                        DoflamingoSignalSupport.condition("conversion-above-base", "Conversion line above base line", "Conversion line", ichimoku.conversionLine(), ">", "Base line", ichimoku.baseLine(), true),
+                        DoflamingoSignalSupport.condition("trend-above-average", "Trend score above moving average", "Trend score", maybeTrend.getAsDouble(), ">", "Trend average", maybeAverage.getAsDouble(), true),
+                        DoflamingoSignalSupport.condition("trend-positive", "Trend score positive", "Trend score", maybeTrend.getAsDouble(), ">", "Zero", 0.0d, true)
+                )
         );
         return new StrategyIntentResult(List.of(signal), List.of(intent), List.of());
     }

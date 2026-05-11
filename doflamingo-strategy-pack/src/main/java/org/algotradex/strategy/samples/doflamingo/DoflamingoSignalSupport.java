@@ -13,6 +13,7 @@ import org.algotradex.platform.contracts.common.value.ConfidenceScore;
 import org.algotradex.platform.contracts.common.value.TimeHorizon;
 import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntent;
+import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentConditionEvidence;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
 import org.algotradex.platform.contracts.intelligence.TradeIntentExitPolicy;
 import org.algotradex.platform.contracts.intelligence.TradeIntentExitRule;
@@ -64,6 +65,19 @@ final class DoflamingoSignalSupport {
             BigDecimal stopLossPct,
             String reason
     ) {
+        return longEntryIntent(strategyId, strategyVersion, context, confidence, setupType, stopLossPct, reason, List.of());
+    }
+
+    static StrategyTradeIntent longEntryIntent(
+            String strategyId,
+            String strategyVersion,
+            StrategyExecutionContext context,
+            BigDecimal confidence,
+            SetupType setupType,
+            BigDecimal stopLossPct,
+            String reason,
+            List<StrategyTradeIntentConditionEvidence> conditions
+    ) {
         BarEvent bar = context.currentBar();
         TradeIntentExitPolicy exitPolicy = stopLossPct == null
                 ? TradeIntentExitPolicy.none()
@@ -83,7 +97,8 @@ final class DoflamingoSignalSupport {
                 exitPolicy,
                 new TradeIntentPreconditions(true, false, PositionSide.ANY, null),
                 reason,
-                "entry-" + bar.eventId().value().toLowerCase(Locale.ROOT)
+                "entry-" + bar.eventId().value().toLowerCase(Locale.ROOT),
+                conditions
         );
     }
 
@@ -94,6 +109,18 @@ final class DoflamingoSignalSupport {
             BigDecimal confidence,
             SetupType setupType,
             String reason
+    ) {
+        return longExitIntent(strategyId, strategyVersion, context, confidence, setupType, reason, List.of());
+    }
+
+    static StrategyTradeIntent longExitIntent(
+            String strategyId,
+            String strategyVersion,
+            StrategyExecutionContext context,
+            BigDecimal confidence,
+            SetupType setupType,
+            String reason,
+            List<StrategyTradeIntentConditionEvidence> conditions
     ) {
         BarEvent bar = context.currentBar();
         return intent(
@@ -107,7 +134,34 @@ final class DoflamingoSignalSupport {
                 TradeIntentExitPolicy.none(),
                 new TradeIntentPreconditions(false, true, PositionSide.LONG, null),
                 reason,
-                "exit-" + bar.eventId().value().toLowerCase(Locale.ROOT)
+                "exit-" + bar.eventId().value().toLowerCase(Locale.ROOT),
+                conditions
+        );
+    }
+
+    static StrategyTradeIntentConditionEvidence condition(
+            String conditionId,
+            String label,
+            String leftName,
+            double leftValue,
+            String operator,
+            String rightName,
+            double rightValue,
+            boolean passed
+    ) {
+        BigDecimal left = decimalOrNull(leftValue);
+        BigDecimal right = decimalOrNull(rightValue);
+        String message = leftName + " " + conditionValue(left) + " " + operator + " " + rightName + " " + conditionValue(right);
+        return new StrategyTradeIntentConditionEvidence(
+                conditionId,
+                label,
+                leftName,
+                left,
+                operator,
+                rightName,
+                right,
+                passed,
+                message
         );
     }
 
@@ -122,7 +176,8 @@ final class DoflamingoSignalSupport {
             TradeIntentExitPolicy exitPolicy,
             TradeIntentPreconditions preconditions,
             String reason,
-            String idSuffix
+            String idSuffix,
+            List<StrategyTradeIntentConditionEvidence> conditions
     ) {
         BarEvent bar = context.currentBar();
         return new StrategyTradeIntent(
@@ -144,7 +199,7 @@ final class DoflamingoSignalSupport {
                 TradeIntentHorizon.unknown(),
                 preconditions,
                 null,
-                new StrategyTradeIntentReason(reason == null || reason.isBlank() ? "Doflamingo lifecycle rule" : reason, List.of(), List.of("doflamingo")),
+                new StrategyTradeIntentReason(reason == null || reason.isBlank() ? "Doflamingo lifecycle rule" : reason, List.of(), List.of("doflamingo"), conditions),
                 new SourceRef(SourceType.STRATEGY, strategyId),
                 bar.cohort(),
                 bar.baseline()
@@ -154,5 +209,17 @@ final class DoflamingoSignalSupport {
     private static BigDecimal normalizedConfidence(BigDecimal confidence) {
         BigDecimal bounded = confidence.max(BigDecimal.ZERO).min(BigDecimal.ONE);
         return bounded.setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal decimal(double value) {
+        return BigDecimal.valueOf(value).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal decimalOrNull(double value) {
+        return Double.isFinite(value) ? decimal(value) : null;
+    }
+
+    private static String conditionValue(BigDecimal value) {
+        return value == null ? "n/a" : value.toPlainString();
     }
 }

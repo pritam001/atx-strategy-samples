@@ -90,6 +90,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
 
         if (activeStopLoss != null) {
             if (current.ohlcv().low().compareTo(activeStopLoss) <= 0 || reversalConfirmed) {
+                BigDecimal stopAtExit = activeStopLoss;
                 activeStopLoss = null;
                 if (context.instrumentPosition().hasPosition()) {
                     return new StrategyIntentResult(
@@ -100,7 +101,14 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                                     context,
                                     confidence,
                                     SetupType.REVERSAL,
-                                    reversalConfirmed ? "Doflamingo Multi V6 reversal confirmation exit" : "Doflamingo Multi V6 fixed stop exit"
+                                    reversalConfirmed ? "Doflamingo Multi V6 reversal confirmation exit" : "Doflamingo Multi V6 fixed stop exit",
+                                    List.of(
+                                            DoflamingoSignalSupport.condition("fixed-stop-hit", "Candle low hit fixed stop", "Candle low", current.ohlcv().low().doubleValue(), "<=", "Active stop", stopAtExit.doubleValue(), current.ohlcv().low().compareTo(stopAtExit) <= 0),
+                                            DoflamingoSignalSupport.condition("psar-reversal-down", "PSAR flipped below long direction", "PSAR", state.psar(), ">=", "Candle low", current.ohlcv().low().doubleValue(), !directionNowUp),
+                                            DoflamingoSignalSupport.condition("close-below-span-b", "Close below present Span B", "Candle close", current.ohlcv().close().doubleValue(), "<", "Ichimoku Span B", state.presentSpanB(), current.ohlcv().close().doubleValue() < state.presentSpanB()),
+                                            DoflamingoSignalSupport.condition("sell-stoch-confirmed", "Stoch RSI sell confirmation", "Stoch K", state.stochK(), "<", "Stoch D", state.stochD(), sellSignalStoch),
+                                            DoflamingoSignalSupport.condition("sell-macd-confirmed", "MACD sell confirmation", "MACD histogram", state.macdHistogram(), "<", "Zero", 0.0d, sellSignalMacd)
+                                    )
                             )),
                             List.of()
                     );
@@ -134,7 +142,14 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                 confidence,
                 SetupType.REVERSAL,
                 stopLossPct,
-                "Doflamingo Multi V6 PSAR, MACD/StochRSI, and cloud reversal entry"
+                "Doflamingo Multi V6 PSAR, MACD/StochRSI, and cloud reversal entry",
+                List.of(
+                        DoflamingoSignalSupport.condition("psar-direction-up", "PSAR confirms upward direction", "PSAR", state.psar(), "<", "Candle low", current.ohlcv().low().doubleValue(), true),
+                        DoflamingoSignalSupport.condition("buy-macd-confirmed", "MACD buy confirmation", "MACD histogram", state.macdHistogram(), ">", "Zero", 0.0d, buySignalMacd),
+                        DoflamingoSignalSupport.condition("buy-stoch-confirmed", "Stoch RSI buy confirmation", "Stoch K", state.stochK(), ">", "Stoch D", state.stochD(), buySignalStoch),
+                        DoflamingoSignalSupport.condition("close-above-span-b", "Close above present Span B", "Candle close", current.ohlcv().close().doubleValue(), ">", "Ichimoku Span B", state.presentSpanB(), true),
+                        DoflamingoSignalSupport.condition("fixed-stop-distance", "Fixed stop percent configured", "Stop loss percent", stopLossPct.doubleValue(), "=", "Configured stop loss percent", stopLossPct.doubleValue(), true)
+                )
         );
         return new StrategyIntentResult(List.of(signal), List.of(intent), List.of());
     }

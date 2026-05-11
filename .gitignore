@@ -1,7 +1,73 @@
-target/
+# =======================================================
+# 1. BUILD ARTIFACTS & MAVEN METADATA
+# =======================================================
+# Maven standard output and build directories
+/target/
+/build/
 **/target/
+**/build/
+# Maven wrapper files (only ignore if generating in target)
+!.mvn/wrapper/maven-wrapper.jar
 
+# Generated POM files from flatten/release plugins
+*.flattened-pom.xml
+# Ignores all .flattened-pom.xml files, even those nested in submodules
+**/.flattened-pom.xml
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+dependency-reduced-pom.xml
+release.properties
+buildNumber.properties
+
+# -------------------------------------------------------
+# 2. IDE SPECIFIC FILES (IntelliJ, Eclipse, VS Code)
+# -------------------------------------------------------
+# IntelliJ IDEA
 .idea/
 *.iml
+*.iws
+*.ipr
+*.class
+.mvn/
 
+# Eclipse
+.classpath
+.project
+.settings/
+.apt_generated/
+.factorypath
+.springBeans
+.sts4-cache
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# VS Code
+.vscode/
+
+# -------------------------------------------------------
+# 3. OPERATING SYSTEM & EPHEMERAL FILES
+# -------------------------------------------------------
+# macOS Files
 .DS_Store
+
+# jenv
+.java-version
+
+# Temporary & Swap Files
+*.swp*
+*.log
+log/
+/output/
+bin/
+
+# Other VCS tools/environments
+/shelf/
+/workspace.xml
+.kotlin/
