@@ -1,0 +1,27 @@
+id: sma-20-pullback-continuation-sample
+description: SMA 20 pullback continuation sample scenario for trusted plugin verification
+instrument: HDFCBANK-EQ
+timeframe: M15
+replayWindow:
+  start: 2026-04-13T09:15:00Z
+  end: 2026-04-13T22:00:00Z
+strategies:
+  - strategyId: sma-20-pullback-continuation-v1
+    strategyVersion: 1.0.0
+    parameters:
+      fastSmaPeriod: 5
+      slowSmaPeriod: 50
+      slopeLookbackBars: 3
+      minSma20SlopePct: 0.05
+      touchTolerancePct: 0.50
+      maxEntryExtensionPct: 2.00
+      consolidationLookbackBars: 3
+      cooldownBars: 4
+      minConfidence: 0.62
+      allowShorts: true
+      useSma200ObstacleFilter: true
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: market-bars.csv
+researchArtifactsPath: ""
+policyProfile: prototype1-default

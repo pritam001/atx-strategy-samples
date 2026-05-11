@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.algotradex.platform</groupId>
+        <artifactId>atx-platform-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../atx-platform-parent/pom.xml</relativePath>
+    </parent>
+
+    <groupId>org.algotradex.strategy.samples</groupId>
+    <artifactId>atx-strategy-samples</artifactId>
+    <packaging>pom</packaging>
+
+    <name>AlgoTradeX Strategy Samples</name>
+    <description>Trusted external strategy samples for AlgoTradeX extension testing</description>
+
+    <properties>
+        <revision>0.1.0-SNAPSHOT</revision>
+        <atx.platform.version>${revision}</atx.platform.version>
+    </properties>
+
+    <modules>
+        <module>ema-crossover-strategy</module>
+        <module>range-support-resistance-strategy</module>
+        <module>sma-20-pullback-continuation-strategy</module>
+        <module>ema-trend-structure-pullback-strategy</module>
+        <module>doflamingo-strategy-pack</module>
+    </modules>
+</project>

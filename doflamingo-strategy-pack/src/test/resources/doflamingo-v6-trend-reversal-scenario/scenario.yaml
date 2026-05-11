@@ -1,0 +1,23 @@
+id: doflamingo-v6-trend-reversal-sample
+description: Doflamingo multi-indicator V6 trend reversal sample scenario for trusted plugin verification
+instrument: NIFTY50
+timeframe: M15
+replayWindow:
+  start: 2026-04-11T09:15:00Z
+  end: 2026-04-12T06:30:00Z
+strategies:
+  - strategyId: doflamingo-multi-indicator-v6-trend-reversal-v1
+    strategyVersion: 1.0.0
+    parameters:
+      confidence: 0.73
+      macdFastPeriod: 3
+      macdSlowPeriod: 7
+      macdSignalPeriod: 8
+      stochOverbought: 80
+      stochOversold: 20
+      stopLossPct: 2.0
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: market-bars.csv
+researchArtifactsPath: ""
+policyProfile: prototype1-default

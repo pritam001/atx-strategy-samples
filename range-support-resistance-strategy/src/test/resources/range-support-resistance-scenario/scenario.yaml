@@ -1,0 +1,20 @@
+id: range-support-resistance-sample
+description: Range support/resistance sample scenario for trusted plugin verification
+instrument: ASIANPAINT-EQ
+timeframe: H1
+replayWindow:
+  start: 2026-04-11T09:15:00Z
+  end: 2026-04-11T14:00:00Z
+strategies:
+  - strategyId: range-support-resistance-v1
+    strategyVersion: 1.0.0
+    parameters:
+      lookback: 3
+      tolerance: 0.01
+      riskReward: 2.0
+      confidence: 0.72
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: market-bars.csv
+researchArtifactsPath: ""
+policyProfile: prototype1-default

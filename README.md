@@ -1,0 +1,78 @@
+# AlgoTradeX Strategy Samples
+
+This project contains trusted external strategy plugins used to verify the custom strategy extension path.
+
+Build the samples:
+
+```bash
+mvn -f atx-strategy-samples/pom.xml package
+```
+
+Install a sample for local Core CLI or BFF discovery:
+
+```bash
+mkdir -p ~/.atx/plugins/strategies
+cp atx-strategy-samples/ema-crossover-strategy/target/ema-crossover-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
+cp atx-strategy-samples/range-support-resistance-strategy/target/range-support-resistance-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
+cp atx-strategy-samples/sma-20-pullback-continuation-strategy/target/sma-20-pullback-continuation-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
+cp atx-strategy-samples/doflamingo-strategy-pack/target/doflamingo-strategy-pack-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
+```
+
+The platform discovers plugins from `ATX_STRATEGY_PLUGIN_DIR` when set, otherwise from `~/.atx/plugins/strategies`.
+
+Available samples:
+
+- `ema-crossover-v1`: emits closed-bar EMA crossover signals.
+- `range-support-resistance-v1`: emits closed-bar support/resistance confirmation signals with suggested entry, stop,
+  target, and market order parameters.
+- `sma-20-pullback-continuation-v1`: emits closed-bar SMA20 pullback continuation setup events using SMA200 as
+  support/resistance context.
+- `doflamingo-ichimoku-mo-002-beta-v1`: ports the Doflamingo 002 beta Ichimoku momentum setup as a long-only continuation
+  signal.
+- `doflamingo-multi-indicator-v6-trend-reversal-v1`: ports the Doflamingo V6 trend-reversal setup as a long-only reversal
+  signal.
+
+Run the EMA sample scenario through the Core CLI:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config ema-crossover-strategy/src/test/resources/ema-crossover-scenario/scenario.yaml \
+  --out /tmp/atx-ema-crossover-run
+```
+
+Run the range support/resistance sample scenario:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config range-support-resistance-strategy/src/test/resources/range-support-resistance-scenario/scenario.yaml \
+  --out /tmp/atx-range-support-resistance-run
+```
+
+Run the SMA 20 pullback continuation sample scenario:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config sma-20-pullback-continuation-strategy/src/test/resources/sma-20-pullback-continuation-scenario/scenario.yaml \
+  --out /tmp/atx-sma-20-pullback-continuation-run
+```
+
+Run the Doflamingo Ichimoku beta sample scenario:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config doflamingo-strategy-pack/src/test/resources/doflamingo-ichimoku-beta-scenario/scenario.yaml \
+  --out /tmp/atx-doflamingo-ichimoku-beta-run
+```
+
+Run the Doflamingo V6 trend-reversal sample scenario:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config doflamingo-strategy-pack/src/test/resources/doflamingo-v6-trend-reversal-scenario/scenario.yaml \
+  --out /tmp/atx-doflamingo-v6-trend-reversal-run
+```

@@ -1,0 +1,20 @@
+id: ema-crossover-sample
+description: EMA crossover sample scenario for trusted plugin verification
+instrument: BANKNIFTY
+timeframe: M15
+replayWindow:
+  start: 2026-04-13T09:15:00Z
+  end: 2026-04-13T12:00:00Z
+strategies:
+  - strategyId: ema-crossover-v1
+    strategyVersion: 1.0.0
+    parameters:
+      fastEmaPeriod: 2
+      slowEmaPeriod: 5
+      minConfidence: 0.72
+      allowShorts: false
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: market-bars.csv
+researchArtifactsPath: ""
+policyProfile: prototype1-default
