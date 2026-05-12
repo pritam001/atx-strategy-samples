@@ -375,6 +375,7 @@ Suggested parameters:
 
 - `minConfidence = 0.60`
 - `trendFilterMode = NONE | SOFT | STRICT`
+- `adaptiveMomentumMode = STRICT_REVERSAL | ADAPTIVE_CONFIRMATION`
 - `stopMode = PERCENT | ATR | CLOUD | ATR_OR_PERCENT_MAX`
 - `stopLossPct = 2.0`
 - `atrStopMultiple = 1.5`
@@ -389,6 +390,8 @@ Indicator timing:
 
 - Use current closed-bar PSAR, MACD, and Stoch RSI values rather than extra-lagged values where replay-safe.
 - Preserve original reversal pattern semantics unless a parameter explicitly enables adaptive behavior.
+- Default `adaptiveMomentumMode = STRICT_REVERSAL`, so MACD/Stoch reversal patterns remain the entry requirement.
+- `ADAPTIVE_CONFIRMATION` explicitly allows improving MACD histogram or rising Stoch K to satisfy adaptive momentum, and emitted condition evidence must show that path.
 
 Confidence scoring:
 

@@ -29,5 +29,6 @@
         <module>sma-20-pullback-continuation-strategy</module>
         <module>ema-trend-structure-pullback-strategy</module>
         <module>doflamingo-strategy-pack</module>
+        <module>doflamingo-v2-strategy-packs</module>
     </modules>
 </project>
