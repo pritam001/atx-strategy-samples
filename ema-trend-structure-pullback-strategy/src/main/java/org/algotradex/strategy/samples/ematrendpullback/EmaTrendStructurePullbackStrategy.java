@@ -29,6 +29,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import static java.util.Objects.requireNonNull;
 
@@ -144,6 +145,244 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         return computeEmaSeries(closes, period);
     }
 
+    private StrategyIntentResult lifecycleIntent(
+            StrategyExecutionContext context,
+            EmaSeries series,
+            EmaSnapshot snapshot,
+            StrategyInstrumentPosition position
+    ) {
+        PositionSide side = position.side();
+        if (side != PositionSide.LONG && side != PositionSide.SHORT) {
+            return StrategyIntentResult.empty();
+        }
+
+        BigDecimal currentR = currentR(position);
+        StopComputation lifecycleStop = lifecycleStopComputation(series, snapshot, side);
+        ExitAssessment hardExit = hardExitAssessment(snapshot, position, currentR);
+        if (hardExit.exit()) {
+            StrategyTradeIntent intent = EmaTrendStructureIntentSupport.exitIntent(
+                    strategyId(),
+                    EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    side,
+                    hardExit.confidence(),
+                    SetupType.PULLBACK,
+                    params.maxHoldingBars(),
+                    exitReason(snapshot, lifecycleStop, position, currentR, hardExit)
+            );
+            return new StrategyIntentResult(List.of(), List.of(intent), List.of());
+        }
+
+        if (canScaleOut(snapshot, position, currentR)) {
+            BigDecimal confidence = scaleOutConfidence(snapshot, position, currentR);
+            StrategyTradeIntent intent = EmaTrendStructureIntentSupport.scaleOutIntent(
+                    strategyId(),
+                    EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    side,
+                    confidence,
+                    SetupType.PULLBACK,
+                    params.scaleOutFraction(),
+                    params.maxHoldingBars(),
+                    scaleOutReason(snapshot, lifecycleStop, position, currentR, confidence)
+            );
+            return new StrategyIntentResult(List.of(), List.of(intent), List.of());
+        }
+
+        ScaleInAssessment scaleIn = scaleInAssessment(series, snapshot, position, currentR);
+        if (scaleIn.emit()) {
+            StrategyTradeIntent intent = EmaTrendStructureIntentSupport.scaleInIntent(
+                    strategyId(),
+                    EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    side,
+                    scaleIn.confidence(),
+                    SetupType.PULLBACK,
+                    params.scaleInFraction(),
+                    params.maxScaleIns(),
+                    params.maxHoldingBars(),
+                    scaleInReason(snapshot, lifecycleStop, position, currentR, scaleIn)
+            );
+            return new StrategyIntentResult(List.of(), List.of(intent), List.of());
+        }
+
+        ExitAssessment timeExit = staleOrMaxExitAssessment(snapshot, position, currentR);
+        if (timeExit.exit()) {
+            StrategyTradeIntent intent = EmaTrendStructureIntentSupport.exitIntent(
+                    strategyId(),
+                    EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    side,
+                    timeExit.confidence(),
+                    SetupType.PULLBACK,
+                    params.maxHoldingBars(),
+                    exitReason(snapshot, lifecycleStop, position, currentR, timeExit)
+            );
+            return new StrategyIntentResult(List.of(), List.of(intent), List.of());
+        }
+
+        return StrategyIntentResult.empty();
+    }
+
+    private ExitAssessment hardExitAssessment(EmaSnapshot snapshot, StrategyInstrumentPosition position, BigDecimal currentR) {
+        boolean isLong = position.side() == PositionSide.LONG;
+        boolean closeBeyondMedium = isLong ? snapshot.close() < snapshot.ema50() : snapshot.close() > snapshot.ema50();
+        boolean mixedStack = snapshot.emaStack() == EmaStack.MIXED_STACK;
+        boolean oppositeStack = isLong ? snapshot.emaStack() == EmaStack.BEARISH_STACK : snapshot.emaStack() == EmaStack.BULLISH_STACK;
+        boolean structureBreak = closeBeyondMedium || mixedStack || oppositeStack;
+        boolean compression = params.exitOnCompression()
+                && currentR.signum() <= 0
+                && snapshot.compressionState() == CompressionState.COMPRESSED;
+        boolean chop = params.exitOnChop()
+                && currentR.signum() <= 0
+                && snapshot.recentPriceEmaCrossCount() >= params.chopCrossCountThreshold();
+        boolean postScaleWeakness = params.trailAfterScaleOut()
+                && position.scaleOutCount() > 0
+                && postScaleWeakness(snapshot, position.side());
+        boolean breakEvenFailure = params.breakEvenAfterScaleOut()
+                && position.scaleOutCount() > 0
+                && currentR.signum() <= 0;
+        boolean exit = structureBreak || compression || chop || postScaleWeakness || breakEvenFailure;
+        return new ExitAssessment(
+                exit,
+                structureBreak,
+                compression,
+                chop,
+                postScaleWeakness,
+                breakEvenFailure,
+                false,
+                false,
+                exitConfidence(closeBeyondMedium, mixedStack || oppositeStack, compression, chop, postScaleWeakness || breakEvenFailure, false, false)
+        );
+    }
+
+    private ExitAssessment staleOrMaxExitAssessment(EmaSnapshot snapshot, StrategyInstrumentPosition position, BigDecimal currentR) {
+        boolean stale = position.barsHeld() >= params.staleBars() && currentR.compareTo(params.staleMinR()) <= 0;
+        boolean maxHolding = position.barsHeld() >= params.maxHoldingBars();
+        return new ExitAssessment(
+                stale || maxHolding,
+                false,
+                false,
+                false,
+                false,
+                false,
+                stale,
+                maxHolding,
+                exitConfidence(false, false, false, false, false, stale, maxHolding)
+        );
+    }
+
+    private boolean canScaleOut(EmaSnapshot snapshot, StrategyInstrumentPosition position, BigDecimal currentR) {
+        return params.enableScaleOut()
+                && position.scaleOutCount() == 0
+                && currentR.compareTo(params.scaleOutAtR()) >= 0
+                && position.maxFavorablePct().signum() > 0
+                && trendValidForScale(position.side(), snapshot);
+    }
+
+    private ScaleInAssessment scaleInAssessment(
+            EmaSeries series,
+            EmaSnapshot snapshot,
+            StrategyInstrumentPosition position,
+            BigDecimal currentR
+    ) {
+        if (!params.enableScaleIn()) {
+            return ScaleInAssessment.disabled();
+        }
+        boolean rPositive = currentR.compareTo(params.scaleInAtR()) >= 0 && currentR.signum() > 0;
+        boolean countAvailable = position.scaleInCount() < params.maxScaleIns();
+        boolean notCompressed = snapshot.compressionState() != CompressionState.COMPRESSED;
+        boolean notChoppy = snapshot.recentPriceEmaCrossCount() < params.chopCrossCountThreshold();
+        boolean clean = notCompressed && notChoppy;
+        boolean trendAligned = trendAlignedForSide(position.side(), snapshot);
+        PullbackQuality renewedPullback = renewedPullbackQuality(position.side(), series, snapshot.index());
+        boolean renewed = trendAligned
+                && clean
+                && renewedPullback.realPullback()
+                && renewedPullback.heldMediumEma()
+                && reclaimedFastEma(position.side(), snapshot);
+        int score = scorePrimary(direction(position.side()), snapshot, renewedPullback);
+        BigDecimal confidence = confidence(score);
+        boolean confidenceOk = confidence.compareTo(BigDecimal.valueOf(0.80)) >= 0;
+        boolean emit = rPositive && countAvailable && renewed && clean && confidenceOk;
+        return new ScaleInAssessment(emit, rPositive, countAvailable, renewed, notCompressed, notChoppy, confidenceOk, confidence);
+    }
+
+    private StopComputation stopComputation(EmaSeries series, SetupCandidate candidate) {
+        return stopComputation(series, candidate.direction(), candidate.anchorIndex(), candidate.snapshot());
+    }
+
+    private StopComputation lifecycleStopComputation(EmaSeries series, EmaSnapshot snapshot, PositionSide side) {
+        int anchorIndex = Math.max(0, snapshot.index() - params.pullbackLookbackBars());
+        return stopComputation(series, direction(side), anchorIndex, snapshot);
+    }
+
+    private StopComputation stopComputation(EmaSeries series, Direction direction, int anchorIndex, EmaSnapshot snapshot) {
+        double close = snapshot.close();
+        double atr = atr(series, snapshot.index(), params.atrPeriod()).orElse(0.0d);
+        double buffer = atr * params.atrStopMultiple().doubleValue();
+        double structureAnchor = direction == Direction.LONG
+                ? recentLow(series, anchorIndex, snapshot.index())
+                : recentHigh(series, anchorIndex, snapshot.index());
+        double[] anchors = direction == Direction.LONG
+                ? new double[]{snapshot.ema50() - buffer, structureAnchor - buffer, close - buffer}
+                : new double[]{snapshot.ema50() + buffer, structureAnchor + buffer, close + buffer};
+        String[] names = new String[]{"ema50_atr", "pullback_atr", "close_atr"};
+
+        double selected = Double.NaN;
+        double rawStopPct = Double.NaN;
+        String selectedName = "fallback";
+        for (int index = 0; index < anchors.length; index++) {
+            double anchor = anchors[index];
+            boolean validSide = direction == Direction.LONG ? anchor < close : anchor > close;
+            if (!Double.isFinite(anchor) || !validSide) {
+                continue;
+            }
+            double distance = direction == Direction.LONG
+                    ? percentageOfClose(close - anchor, close)
+                    : percentageOfClose(anchor - close, close);
+            if (distance > rawStopPct || Double.isNaN(rawStopPct)) {
+                selected = anchor;
+                rawStopPct = distance;
+                selectedName = names[index];
+            }
+        }
+        if (!Double.isFinite(rawStopPct) || rawStopPct <= 0.0d) {
+            rawStopPct = params.minStopPct().doubleValue();
+            selected = direction == Direction.LONG
+                    ? close * (1.0d - pct(params.minStopPct()))
+                    : close * (1.0d + pct(params.minStopPct()));
+        }
+
+        double stopPct = Math.max(params.minStopPct().doubleValue(), Math.min(params.maxStopPct().doubleValue(), rawStopPct));
+        boolean clampedAtMax = rawStopPct > params.maxStopPct().doubleValue();
+        BigDecimal stopPctDecimal = EmaTrendStructureIntentSupport.decimal(stopPct);
+        return new StopComputation(
+                selectedName,
+                selected,
+                rawStopPct,
+                stopPctDecimal,
+                clampedAtMax,
+                EmaTrendStructureIntentSupport.percentStop(
+                        stopPctDecimal,
+                        "EMA pullback v2 " + params.stopMode() + " percent stop from " + selectedName
+                )
+        );
+    }
+
+    private BigDecimal entryConfidence(int strengthScore, StopComputation stop) {
+        double score = strengthScore / 100.0d;
+        boolean insideStopRange = stop.rawStopPct() >= params.minStopPct().doubleValue()
+                && stop.rawStopPct() <= params.maxStopPct().doubleValue();
+        if (insideStopRange) {
+            score += 0.05d;
+        }
+        if (stop.clampedAtMax()) {
+            score -= 0.10d;
+        }
+        return EmaTrendStructureIntentSupport.confidence(score);
+    }
+
     private Optional<SetupCandidate> processIndex(EmaSeries series, int index) {
         longRuntime.onNewBar();
         shortRuntime.onNewBar();
@@ -234,7 +473,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                 ? SetupKind.BULLISH_PULLBACK_CONTINUATION
                 : SetupKind.BEARISH_PULLBACK_CONTINUATION;
         int score = scorePrimary(direction, snapshot, pullback);
-        return Optional.of(new SetupCandidate(direction, kind, SetupType.PULLBACK, anchorIndex, score, confidence(score), snapshot));
+        return Optional.of(new SetupCandidate(direction, kind, SetupType.PULLBACK, anchorIndex, score, confidence(score), snapshot, pullback));
     }
 
     private Optional<SetupCandidate> bullishTransitionCandidate(EmaSeries series, EmaSnapshot snapshot) {
@@ -256,7 +495,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
 
         int score = scoreTransition(snapshot);
         return Optional.of(new SetupCandidate(Direction.LONG, SetupKind.BULLISH_TRANSITION_BREAKOUT,
-                SetupType.CONTINUATION, anchorIndex, score, confidence(score), snapshot));
+                SetupType.CONTINUATION, anchorIndex, score, confidence(score), snapshot, new PullbackQuality(true, true, true)));
     }
 
     private boolean currentLongContinuationConfirm(EmaSnapshot snapshot) {
@@ -483,7 +722,144 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         return BigDecimal.valueOf(clamped).setScale(4, RoundingMode.HALF_UP);
     }
 
-    private TradeSignal signal(StrategyExecutionContext context, SetupCandidate candidate) {
+    private StrategyTradeIntentReason entryReason(SetupCandidate candidate, StopComputation stop, BigDecimal confidence) {
+        EmaSnapshot snapshot = candidate.snapshot();
+        Direction direction = candidate.direction();
+        PullbackQuality pullback = candidate.pullbackQuality();
+        boolean stackAligned = direction == Direction.LONG
+                ? snapshot.emaStack() == EmaStack.BULLISH_STACK || snapshot.emaStack() == EmaStack.BULLISH_TRANSITION
+                : snapshot.emaStack() == EmaStack.BEARISH_STACK || snapshot.emaStack() == EmaStack.BEARISH_TRANSITION;
+        boolean slopeAligned = direction == Direction.LONG ? bullishSlope(snapshot) : bearishSlope(snapshot);
+        boolean reclaim = direction == Direction.LONG ? snapshot.close() > snapshot.ema20() : snapshot.close() < snapshot.ema20();
+        boolean notCompressed = snapshot.compressionState() != CompressionState.COMPRESSED;
+        boolean notChoppy = snapshot.recentPriceEmaCrossCount() < params.chopCrossCountThreshold();
+        double fastDistance = sideDistancePct(direction, snapshot.close(), snapshot.ema20());
+        boolean distanceAcceptable = fastDistance <= params.maxDistanceFromFastEmaPct().doubleValue();
+        boolean stopAcceptable = stop.stopPct().compareTo(params.minStopPct()) >= 0 && stop.stopPct().compareTo(params.maxStopPct()) <= 0;
+        String stackConditionId = direction == Direction.LONG ? "ema-v2.bullish-stack" : "ema-v2.bearish-stack";
+        return EmaTrendStructureIntentSupport.reason(
+                "EMA trend-structure pullback v2 entry: " + candidate.kind().tagValue(),
+                commonEvidence(snapshot, List.of(
+                        "setupKind=" + candidate.kind().tagValue(),
+                        "strengthScore=" + candidate.strengthScore(),
+                        "confidence=" + confidence,
+                        "stopMode=" + params.stopMode(),
+                        "stopAnchor=" + stop.anchorName(),
+                        "rawStopPct=" + formatPct(stop.rawStopPct()),
+                        "stopPct=" + stop.stopPct(),
+                        "riskFraction=" + params.riskFraction(),
+                        "maxHoldingBars=" + params.maxHoldingBars()
+                )),
+                List.of("ema-trend-structure", "v2", "lifecycle", "entry", setupTag(candidate), "risk", "confidence"),
+                List.of(
+                        EmaTrendStructureIntentSupport.condition(stackConditionId, "EMA stack supports entry side", "Stack aligned", stackAligned ? 1.0d : 0.0d, "=", "Required", 1.0d, stackAligned),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.slope-aligned", "EMA slopes align with entry side", "Slope aligned", slopeAligned ? 1.0d : 0.0d, "=", "Required", 1.0d, slopeAligned),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.pullback-real", "Pullback touched the fast EMA zone", "Real pullback", pullback.realPullback() ? 1.0d : 0.0d, "=", "Required", 1.0d, pullback.realPullback()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.pullback-held-ema50", "Pullback held the medium EMA", "Held EMA50", pullback.heldMediumEma() ? 1.0d : 0.0d, "=", "Required", 1.0d, pullback.heldMediumEma()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.reclaim-ema20", "Current close reclaimed EMA20", "Close", snapshot.close(), direction == Direction.LONG ? ">" : "<", "EMA20", snapshot.ema20(), reclaim),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.not-compressed", "EMA stack is not compressed", "Compression", notCompressed ? 0.0d : 1.0d, "=", "Compressed flag", 0.0d, notCompressed),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.not-choppy", "Recent EMA crosses remain below chop threshold", "Recent crosses", snapshot.recentPriceEmaCrossCount(), "<", "Chop threshold", params.chopCrossCountThreshold(), notChoppy),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.distance-acceptable", "Close is not overextended from EMA20", "Distance from EMA20 %", fastDistance, "<=", "Maximum distance %", params.maxDistanceFromFastEmaPct().doubleValue(), distanceAcceptable),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.stop-distance-acceptable", "Computed stop distance is within configured bounds", "Stop %", stop.stopPct(), "<=", "Maximum stop %", params.maxStopPct(), stopAcceptable),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.confidence-threshold", "Dynamic confidence meets threshold", "Confidence", confidence, ">=", "Minimum confidence", params.minConfidence(), true)
+                )
+        );
+    }
+
+    private StrategyTradeIntentReason scaleOutReason(
+            EmaSnapshot snapshot,
+            StopComputation stop,
+            StrategyInstrumentPosition position,
+            BigDecimal currentR,
+            BigDecimal confidence
+    ) {
+        boolean trendValid = trendValidForScale(position.side(), snapshot);
+        return EmaTrendStructureIntentSupport.reason(
+                "EMA trend-structure pullback v2 scale-out at configured R multiple",
+                lifecycleEvidence(snapshot, stop, position, currentR, List.of(
+                        "scaleOutAtR=" + params.scaleOutAtR(),
+                        "scaleOutFraction=" + params.scaleOutFraction(),
+                        "confidence=" + confidence
+                )),
+                List.of("ema-trend-structure", "v2", "lifecycle", "scale-out", "pullback", "risk", "confidence"),
+                List.of(
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-out-r-multiple", "Current R reached scale-out threshold", "Current R", currentR, ">=", "Scale-out R", params.scaleOutAtR(), true),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-out-favorable-excursion", "Position has favorable excursion", "Max favorable %", position.maxFavorablePct(), ">", "Zero", BigDecimal.ZERO, position.maxFavorablePct().signum() > 0),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-out-trend-valid", "Trend is not fully broken", "Trend valid", trendValid ? 1.0d : 0.0d, "=", "Required", 1.0d, trendValid)
+                )
+        );
+    }
+
+    private StrategyTradeIntentReason scaleInReason(
+            EmaSnapshot snapshot,
+            StopComputation stop,
+            StrategyInstrumentPosition position,
+            BigDecimal currentR,
+            ScaleInAssessment assessment
+    ) {
+        return EmaTrendStructureIntentSupport.reason(
+                "EMA trend-structure pullback v2 scale-in on renewed pullback confirmation",
+                lifecycleEvidence(snapshot, stop, position, currentR, List.of(
+                        "scaleInAtR=" + params.scaleInAtR(),
+                        "scaleInFraction=" + params.scaleInFraction(),
+                        "maxScaleIns=" + params.maxScaleIns(),
+                        "scaleInNotCompressed=" + assessment.notCompressed(),
+                        "scaleInNotChoppy=" + assessment.notChoppy(),
+                        "confidence=" + assessment.confidence()
+                )),
+                List.of("ema-trend-structure", "v2", "lifecycle", "scale-in", "pullback", "risk", "confidence"),
+                List.of(
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-in-r-positive", "Scale-in requires profitable R multiple", "Current R", currentR, ">=", "Scale-in R", params.scaleInAtR(), assessment.rPositive()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-in-count-available", "Scale-in count remains available", "Scale-in count", position.scaleInCount(), "<", "Maximum scale-ins", params.maxScaleIns(), assessment.countAvailable()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-in-renewed-pullback", "Renewed EMA20 pullback confirmation exists", "Renewed pullback", assessment.renewedPullback() ? 1.0d : 0.0d, "=", "Required", 1.0d, assessment.renewedPullback()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-in-not-choppy", "Structure is not compressed or choppy", "Clean structure", assessment.clean() ? 1.0d : 0.0d, "=", "Required", 1.0d, assessment.clean()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.scale-in-confidence-threshold", "Scale-in confidence meets stricter threshold", "Confidence", assessment.confidence(), ">=", "Scale-in confidence", BigDecimal.valueOf(0.80), assessment.confidenceOk())
+                )
+        );
+    }
+
+    private StrategyTradeIntentReason exitReason(
+            EmaSnapshot snapshot,
+            StopComputation stop,
+            StrategyInstrumentPosition position,
+            BigDecimal currentR,
+            ExitAssessment assessment
+    ) {
+        String summary = "EMA trend-structure pullback v2 lifecycle exit";
+        if (assessment.postScaleWeakness() && assessment.breakEvenFailure()) {
+            summary = summary + ": post-scale trailing weakness and breakeven failure";
+        } else if (assessment.postScaleWeakness()) {
+            summary = summary + ": post-scale trailing weakness";
+        } else if (assessment.breakEvenFailure()) {
+            summary = summary + ": breakeven failure after scale-out";
+        }
+        return EmaTrendStructureIntentSupport.reason(
+                summary,
+                lifecycleEvidence(snapshot, stop, position, currentR, List.of(
+                        "structureBreak=" + assessment.structureBreak(),
+                        "compressionExit=" + assessment.compression(),
+                        "chopExit=" + assessment.chop(),
+                        "postScaleWeakness=" + assessment.postScaleWeakness(),
+                        "breakEvenFailure=" + assessment.breakEvenFailure(),
+                        "postScaleTrail=" + assessment.postScaleExit(),
+                        "staleExit=" + assessment.stale(),
+                        "maxHoldingExit=" + assessment.maxHolding(),
+                        "confidence=" + assessment.confidence()
+                )),
+                List.of("ema-trend-structure", "v2", "lifecycle", "exit", "pullback", "risk", "confidence"),
+                List.of(
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-structure-break", "EMA structure has broken", "Structure break", assessment.structureBreak() ? 1.0d : 0.0d, "=", "Required", 1.0d, assessment.structureBreak()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-stale-bars", "Bars held reached stale threshold", "Bars held", position.barsHeld(), ">=", "Stale bars", params.staleBars(), assessment.stale()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-stale-r", "R multiple remains below stale threshold", "Current R", currentR, "<=", "Stale minimum R", params.staleMinR(), assessment.stale()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-post-scale-trail", "Post-scale trailing or breakeven weakness", "Post-scale weakness", assessment.postScaleExit() ? 1.0d : 0.0d, "=", "Required", 1.0d, assessment.postScaleExit()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-max-holding", "Bars held reached max holding threshold", "Bars held", position.barsHeld(), ">=", "Max holding bars", params.maxHoldingBars(), assessment.maxHolding()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-compression", "Losing trade entered EMA compression", "Compression", assessment.compression() ? 1.0d : 0.0d, "=", "Required", 1.0d, assessment.compression()),
+                        EmaTrendStructureIntentSupport.condition("ema-v2.exit-chop", "Losing trade entered chop", "Recent crosses", snapshot.recentPriceEmaCrossCount(), ">=", "Chop threshold", params.chopCrossCountThreshold(), assessment.chop())
+                )
+        );
+    }
+
+    private TradeSignal signal(StrategyExecutionContext context, SetupCandidate candidate, BigDecimal confidence) {
         BarEvent bar = context.currentBar();
         EmaSnapshot snapshot = candidate.snapshot();
         return new TradeSignal(
@@ -491,7 +867,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                 new SignalId("signal-" + strategyId() + '-' + bar.eventId().value() + '-' + candidate.kind().tagValue()),
                 bar.instrument(),
                 candidate.direction(),
-                new ConfidenceScore(candidate.confidence()),
+                new ConfidenceScore(confidence),
                 candidate.setupType(),
                 new TimeHorizon("short_continuation", Duration.ofHours(4)),
                 bar.occurredAt(),
@@ -506,7 +882,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                         "trend_structure=" + snapshot.trendStructure().name().toLowerCase(Locale.ROOT),
                         "recent_cross_count=" + snapshot.recentPriceEmaCrossCount(),
                         "distance_from_ema20_pct=" + formatPct(sideDistancePct(candidate.direction(), snapshot.close(), snapshot.ema20())),
-                        "formula_version=ema-trend-structure-pullback-v1"
+                        "formula_version=ema-trend-structure-pullback-v2"
                 )),
                 bar.cohort(),
                 bar.baseline()
@@ -521,6 +897,159 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         processedBars = 0;
         longRuntime.resetAll();
         shortRuntime.resetAll();
+    }
+
+    private List<String> commonEvidence(EmaSnapshot snapshot, List<String> additionalEvidence) {
+        List<String> evidence = new ArrayList<>();
+        evidence.add("emaStack=" + snapshot.emaStack());
+        evidence.add("trendStructure=" + snapshot.trendStructure());
+        evidence.add("ema20SlopePct=" + formatPct(snapshot.ema20SlopePct()));
+        evidence.add("ema50SlopePct=" + formatPct(snapshot.ema50SlopePct()));
+        evidence.add("emaSeparationPct=" + formatPct(snapshot.emaSeparationPct()));
+        evidence.add("recentCrossCount=" + snapshot.recentPriceEmaCrossCount());
+        evidence.add("distanceFromEma20Pct=" + formatPct(Math.abs(percentageChange(snapshot.close(), snapshot.ema20()))));
+        evidence.addAll(additionalEvidence);
+        return evidence;
+    }
+
+    private List<String> lifecycleEvidence(
+            EmaSnapshot snapshot,
+            StopComputation stop,
+            StrategyInstrumentPosition position,
+            BigDecimal currentR,
+            List<String> additionalEvidence
+    ) {
+        List<String> evidence = new ArrayList<>();
+        evidence.add("positionSide=" + position.side());
+        evidence.add("stopMode=" + params.stopMode());
+        evidence.add("stopAnchor=" + stop.anchorName());
+        evidence.add("currentStopPct=" + stop.stopPct());
+        evidence.add("riskFraction=" + params.riskFraction());
+        evidence.add("maxHoldingBars=" + params.maxHoldingBars());
+        evidence.add("positionBarsHeld=" + position.barsHeld());
+        evidence.add("currentR=" + currentR);
+        evidence.add("mfeR=" + mfeR(position));
+        evidence.add("maxFavorablePct=" + position.maxFavorablePct());
+        evidence.add("scaleOutCount=" + position.scaleOutCount());
+        evidence.add("scaleInCount=" + position.scaleInCount());
+        evidence.addAll(additionalEvidence);
+        return commonEvidence(snapshot, evidence);
+    }
+
+    private String setupTag(SetupCandidate candidate) {
+        return candidate.kind() == SetupKind.BULLISH_TRANSITION_BREAKOUT ? "transition" : "pullback";
+    }
+
+    private BigDecimal scaleOutConfidence(EmaSnapshot snapshot, StrategyInstrumentPosition position, BigDecimal currentR) {
+        double score = 0.75d;
+        if (currentR.compareTo(BigDecimal.valueOf(1.50)) >= 0) {
+            score += 0.10d;
+        }
+        if (position.maxFavorablePct().signum() > 0) {
+            score += 0.05d;
+        }
+        if (ema20Weakening(snapshot, position.side())) {
+            score -= 0.05d;
+        }
+        return EmaTrendStructureIntentSupport.confidence(score);
+    }
+
+    private BigDecimal exitConfidence(
+            boolean closeBeyondMedium,
+            boolean mixedOrOppositeStack,
+            boolean compression,
+            boolean chop,
+            boolean postScaleWeakness,
+            boolean stale,
+            boolean maxHolding
+    ) {
+        double score = 0.50d;
+        if (closeBeyondMedium && mixedOrOppositeStack) {
+            score = Math.max(score, 0.90d);
+        } else if (closeBeyondMedium || mixedOrOppositeStack) {
+            score = Math.max(score, 0.85d);
+        }
+        if (postScaleWeakness) {
+            score = Math.max(score, 0.80d);
+        }
+        if (compression || chop) {
+            score = Math.max(score, 0.75d);
+        }
+        if (stale) {
+            score = Math.max(score, 0.70d);
+        }
+        if (maxHolding) {
+            score = Math.max(score, 0.65d);
+        }
+        return EmaTrendStructureIntentSupport.confidence(score);
+    }
+
+    private boolean postScaleWeakness(EmaSnapshot snapshot, PositionSide side) {
+        if (side == PositionSide.LONG) {
+            return (snapshot.close() < snapshot.ema20() && snapshot.ema20SlopePct() <= params.flatSlopeThresholdPct().doubleValue())
+                    || snapshot.close() < snapshot.ema50();
+        }
+        return (snapshot.close() > snapshot.ema20() && snapshot.ema20SlopePct() >= -params.flatSlopeThresholdPct().doubleValue())
+                || snapshot.close() > snapshot.ema50();
+    }
+
+    private boolean ema20Weakening(EmaSnapshot snapshot, PositionSide side) {
+        return side == PositionSide.LONG
+                ? snapshot.ema20SlopePct() <= params.flatSlopeThresholdPct().doubleValue()
+                : snapshot.ema20SlopePct() >= -params.flatSlopeThresholdPct().doubleValue();
+    }
+
+    private boolean trendValidForScale(PositionSide side, EmaSnapshot snapshot) {
+        if (side == PositionSide.LONG) {
+            return snapshot.close() >= snapshot.ema50()
+                    && snapshot.emaStack() != EmaStack.BEARISH_STACK
+                    && snapshot.emaStack() != EmaStack.MIXED_STACK;
+        }
+        return snapshot.close() <= snapshot.ema50()
+                && snapshot.emaStack() != EmaStack.BULLISH_STACK
+                && snapshot.emaStack() != EmaStack.MIXED_STACK;
+    }
+
+    private boolean trendAlignedForSide(PositionSide side, EmaSnapshot snapshot) {
+        return side == PositionSide.LONG
+                ? snapshot.emaStack() == EmaStack.BULLISH_STACK && bullishSlope(snapshot)
+                : snapshot.emaStack() == EmaStack.BEARISH_STACK && bearishSlope(snapshot);
+    }
+
+    private PullbackQuality renewedPullbackQuality(PositionSide side, EmaSeries series, int currentIndex) {
+        int anchorIndex = Math.max(0, currentIndex - params.pullbackLookbackBars());
+        return pullbackQuality(direction(side), series, anchorIndex, currentIndex);
+    }
+
+    private boolean reclaimedFastEma(PositionSide side, EmaSnapshot snapshot) {
+        if (side == PositionSide.LONG) {
+            return snapshot.close() > snapshot.ema20()
+                    && snapshot.close() > snapshot.previousClose()
+                    && snapshot.closeLocation() >= 0.65d;
+        }
+        return snapshot.close() < snapshot.ema20()
+                && snapshot.close() < snapshot.previousClose()
+                && snapshot.closeLocation() <= 0.35d;
+    }
+
+    private static BigDecimal currentR(StrategyInstrumentPosition position) {
+        return position.currentRMultiple() == null ? BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP) : position.currentRMultiple();
+    }
+
+    private static BigDecimal mfeR(StrategyInstrumentPosition position) {
+        BigDecimal initialRisk = position.initialRiskUnit();
+        if (initialRisk == null || initialRisk.signum() == 0) {
+            return BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        }
+        return position.maxFavorablePct().divide(initialRisk, 4, RoundingMode.HALF_UP);
+    }
+
+    private static PositionSide side(Direction direction) {
+        return direction == Direction.LONG ? PositionSide.LONG : PositionSide.SHORT;
+    }
+
+    private static Direction direction(PositionSide side) {
+        return side == PositionSide.LONG ? Direction.LONG : Direction.SHORT;
     }
 
     private static boolean breaksPriorHigh(EmaSeries series, int index, int lookbackBars) {
@@ -547,6 +1076,41 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
             low = Math.min(low, series.low()[candidate]);
         }
         return low;
+    }
+
+    private static double recentLow(EmaSeries series, int startIndex, int endIndex) {
+        double low = Double.POSITIVE_INFINITY;
+        int start = Math.max(0, startIndex);
+        int end = Math.min(series.low().length - 1, endIndex);
+        for (int index = start; index <= end; index++) {
+            low = Math.min(low, series.low()[index]);
+        }
+        return low;
+    }
+
+    private static double recentHigh(EmaSeries series, int startIndex, int endIndex) {
+        double high = Double.NEGATIVE_INFINITY;
+        int start = Math.max(0, startIndex);
+        int end = Math.min(series.high().length - 1, endIndex);
+        for (int index = start; index <= end; index++) {
+            high = Math.max(high, series.high()[index]);
+        }
+        return high;
+    }
+
+    private static OptionalDouble atr(EmaSeries series, int index, int period) {
+        if (period <= 0 || index <= 0 || index < period) {
+            return OptionalDouble.empty();
+        }
+        double total = 0.0d;
+        int start = index - period + 1;
+        for (int cursor = start; cursor <= index; cursor++) {
+            double highLow = series.high()[cursor] - series.low()[cursor];
+            double highPrevClose = Math.abs(series.high()[cursor] - series.close()[cursor - 1]);
+            double lowPrevClose = Math.abs(series.low()[cursor] - series.close()[cursor - 1]);
+            total += Math.max(highLow, Math.max(highPrevClose, lowPrevClose));
+        }
+        return OptionalDouble.of(total / period);
     }
 
     private static int countRecentPriceEmaCrosses(EmaSeries series, int currentIndex, int lookbackBars) {
@@ -680,6 +1244,51 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
 
         int priority() {
             return priority;
+        }
+    }
+
+    private record StopComputation(
+            String anchorName,
+            double anchorPrice,
+            double rawStopPct,
+            BigDecimal stopPct,
+            boolean clampedAtMax,
+            TradeIntentExitPolicy exitPolicy
+    ) {
+    }
+
+    private record ExitAssessment(
+            boolean exit,
+            boolean structureBreak,
+            boolean compression,
+            boolean chop,
+            boolean postScaleWeakness,
+            boolean breakEvenFailure,
+            boolean stale,
+            boolean maxHolding,
+            BigDecimal confidence
+    ) {
+        boolean postScaleExit() {
+            return postScaleWeakness || breakEvenFailure;
+        }
+    }
+
+    private record ScaleInAssessment(
+            boolean emit,
+            boolean rPositive,
+            boolean countAvailable,
+            boolean renewedPullback,
+            boolean notCompressed,
+            boolean notChoppy,
+            boolean confidenceOk,
+            BigDecimal confidence
+    ) {
+        boolean clean() {
+            return notCompressed && notChoppy;
+        }
+
+        static ScaleInAssessment disabled() {
+            return new ScaleInAssessment(false, false, false, false, false, false, false, BigDecimal.valueOf(0.50));
         }
     }
 
@@ -908,7 +1517,8 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
             int anchorIndex,
             int strengthScore,
             BigDecimal confidence,
-            EmaSnapshot snapshot
+            EmaSnapshot snapshot,
+            PullbackQuality pullbackQuality
     ) {
     }
 }

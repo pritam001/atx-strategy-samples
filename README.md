@@ -17,6 +17,7 @@ cp atx-strategy-samples/range-support-resistance-strategy/target/range-support-r
 cp atx-strategy-samples/sma-20-pullback-continuation-strategy/target/sma-20-pullback-continuation-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 cp atx-strategy-samples/doflamingo-strategy-pack/target/doflamingo-strategy-pack-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 cp atx-strategy-samples/doflamingo-v2-strategy-packs/target/doflamingo-v2-strategy-packs-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
+cp atx-strategy-samples/ema-trend-structure-pullback-strategy/target/ema-trend-structure-pullback-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 ```
 
 The platform discovers plugins from `ATX_STRATEGY_PLUGIN_DIR` when set, otherwise from `~/.atx/plugins/strategies`.
@@ -37,6 +38,10 @@ Available samples:
 - `doflamingo-multi-indicator-v6-trend-reversal-v2`: ATX-adaptive Multi V6 lifecycle variant with structured
   condition evidence, explicit adaptive momentum mode, trend-filtered entries, runtime stop policy, stale exits, and
   one-shot scale-out intents.
+- `ema-trend-structure-pullback-v2`: EMA trend-structure pullback lifecycle variant with signal-plus-intent entries,
+  EMA50/ATR-derived percent stops, full-close exits, stale and max-holding discipline, one-shot scale-outs, and optional
+  scale-ins. Defaults remain EMA20/50/200; compact EMA periods are allowed so the bundled replay fixture can validate
+  lifecycle behavior with a small dataset.
 
 Run the EMA sample scenario through the Core CLI:
 
@@ -99,4 +104,13 @@ ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
   java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
   replay run --config doflamingo-v2-strategy-packs/src/test/resources/doflamingo-v6-trend-reversal-v2-scenario/scenario.yaml \
   --out /tmp/atx-doflamingo-v6-trend-reversal-v2-run
+```
+
+Run the EMA trend-structure pullback v2 lifecycle scenario:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config ema-trend-structure-pullback-strategy/src/test/resources/ema-trend-structure-pullback-v2-scenario/scenario.yaml \
+  --out /tmp/atx-ema-trend-structure-pullback-v2-run
 ```

@@ -1,0 +1,56 @@
+id: ema-trend-structure-pullback-v2-sample
+description: EMA trend-structure pullback lifecycle v2 compact scenario for trusted plugin verification
+instrument: NIFTY50
+timeframe: M15
+replayWindow:
+  start: 2026-04-11T09:15:00Z
+  end: 2026-04-11T14:30:00Z
+strategies:
+  - strategyId: ema-trend-structure-pullback-v2
+    strategyVersion: 2.0.0
+    parameters:
+      fastEmaPeriod: 3
+      mediumEmaPeriod: 5
+      slowEmaPeriod: 8
+      slopeLookbackBars: 2
+      flatSlopeThresholdPct: 0.05
+      compressedSeparationThresholdPct: 0.50
+      expandingSeparationThresholdPct: 1.50
+      chopCrossLookbackBars: 6
+      chopCrossCountThreshold: 5
+      pullbackLookbackBars: 8
+      pullbackMinBars: 2
+      emaTouchTolerancePct: 0.35
+      maxDistanceFromFastEmaPct: 3.00
+      idealDistanceFromFastEmaPct: 2.00
+      maxDistanceFromMediumEmaPct: 8.00
+      priorBreakoutLookbackBars: 3
+      transitionBreakoutLookbackBars: 5
+      minConfidence: 0.70
+      allowShorts: false
+      cooldownBars: 3
+      riskFraction: 0.01
+      maxHoldingBars: 12
+      staleBars: 6
+      staleMinR: 0.25
+      stopMode: EMA50_OR_ATR
+      atrPeriod: 3
+      atrStopMultiple: 1.5
+      minStopPct: 0.50
+      maxStopPct: 3.00
+      enableScaleOut: true
+      scaleOutAtR: 1.0
+      scaleOutFraction: 0.50
+      trailAfterScaleOut: true
+      enableScaleIn: false
+      scaleInAtR: 0.50
+      maxScaleIns: 1
+      scaleInFraction: 0.25
+      breakEvenAfterScaleOut: true
+      exitOnCompression: true
+      exitOnChop: true
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: market-bars.csv
+researchArtifactsPath: ""
+policyProfile: prototype1-default

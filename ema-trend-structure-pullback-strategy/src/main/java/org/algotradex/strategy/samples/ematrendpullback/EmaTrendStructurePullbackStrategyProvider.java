@@ -75,7 +75,7 @@ public final class EmaTrendStructurePullbackStrategyProvider implements Strategy
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
             integer(FAST_EMA_PERIOD, "Fast EMA Period", "Closed-bar period count for EMA20 structure.", 20, 2, 100),
             integer(MEDIUM_EMA_PERIOD, "Medium EMA Period", "Closed-bar period count for EMA50 structure.", 50, 5, 250),
-            integer(SLOW_EMA_PERIOD, "Slow EMA Period", "Closed-bar period count for EMA200 structure.", 200, 50, 500),
+            integer(SLOW_EMA_PERIOD, "Slow EMA Period", "Closed-bar period count for EMA200 structure.", 200, 5, 500),
             integer(SLOPE_LOOKBACK_BARS, "Slope Lookback Bars", "Closed-bar lookback used for EMA slope percentages.", 5, 1, 50),
             decimal(FLAT_SLOPE_THRESHOLD_PCT, "Flat Slope Threshold %", "Slope threshold that separates rising/falling EMA states from flat.", "0.05", "0.00", "5.00"),
             decimal(COMPRESSED_SEPARATION_THRESHOLD_PCT, "Compressed Separation Threshold %", "Maximum EMA-stack separation treated as compression.", "0.50", "0.00", "10.00"),
