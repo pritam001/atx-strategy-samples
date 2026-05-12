@@ -11,7 +11,15 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * ServiceLoader provider for the sample range support/resistance strategy.
+ * ServiceLoader entrypoint for {@code range-support-resistance-v1}.
+ * <p>
+ * The provider publishes the sample descriptor, validates bounded lookback/tolerance/risk-reward
+ * parameters, and creates fresh run-scoped signal strategies for M15, H1, and D1 equity/index bars.
+ * The descriptor advertises the signal contract; validation remains the authority for effective
+ * runtime parameters.
+ * <p>
+ * This plugin boundary does not load market data, sequence replay bars, route orders, or account
+ * for portfolio state.
  */
 public final class RangeSupportResistanceStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "range-support-resistance-v1";

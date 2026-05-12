@@ -30,6 +30,16 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * Internal factory for Doflamingo signal and lifecycle-intent contract records.
+ * <p>
+ * The helper keeps signal IDs, intent IDs, sizing metadata, exit policies, horizons, and condition
+ * evidence consistent across the sample strategies. It is not a public SPI and does not decide
+ * whether a setup is valid.
+ * <p>
+ * Built records are advisory strategy output. The helper does not execute trades, mutate positions,
+ * route broker orders, or reserve portfolio capital.
+ */
 final class DoflamingoSignalSupport {
     private static final Duration DEFAULT_HORIZON = Duration.ofHours(4);
 

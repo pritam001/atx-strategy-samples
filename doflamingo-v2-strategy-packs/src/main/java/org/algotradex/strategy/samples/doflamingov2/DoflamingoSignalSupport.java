@@ -33,6 +33,16 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * Internal factory for Doflamingo v2 signal and lifecycle-intent records.
+ * <p>
+ * The helper centralizes action mapping, sizing metadata, exit policies, horizons, condition
+ * evidence, and stable IDs so the Ichimoku and Multi V6 samples emit consistent contract payloads.
+ * It is package-private implementation support, not a reusable platform SPI.
+ * <p>
+ * The records produced here are strategy recommendations. Execution, broker routing, position
+ * mutation, and portfolio accounting are outside this helper.
+ */
 final class DoflamingoSignalSupport {
     private static final Duration DEFAULT_HORIZON = Duration.ofHours(4);
 

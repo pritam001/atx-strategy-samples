@@ -21,7 +21,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the Doflamingo multi-indicator v6 trend reversal port.
+ * ServiceLoader entrypoint for {@code doflamingo-multi-indicator-v6-trend-reversal-v1}.
+ * <p>
+ * The provider exposes metadata and validation for the original long-only Doflamingo V6 sample,
+ * including MACD, Stoch RSI, PSAR, Ichimoku, and fixed-stop parameters. It creates a fresh
+ * run-scoped strategy instance after validating threshold and MACD period relationships.
+ * <p>
+ * Descriptor and chart-study metadata are advisory registry/UI contracts. Replay sequencing,
+ * accepted-position state, execution routing, fills, and portfolio accounting stay with the
+ * platform runtime.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "doflamingo-multi-indicator-v6-trend-reversal-v1";

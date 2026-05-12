@@ -24,7 +24,17 @@ import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Closed-bar support/resistance sample strategy.
+ * Sample {@link TradeSignalStrategy} that emits support/resistance confirmation signals on closed
+ * bars.
+ * <p>
+ * The strategy derives support and resistance from the previous lookback window and emits at most
+ * one long or short signal when the current close is near that level and the candle confirms away
+ * from it. Suggested entry, stop, target, and market order metadata are advisory signal payload, not
+ * executable broker instructions.
+ * <p>
+ * Instances are run-scoped and deterministic for the same ordered bar history and parameters. The
+ * class does not own order routing, position lifecycle, slippage, exchange rules, or portfolio
+ * accounting.
  */
 public final class RangeSupportResistanceStrategy implements TradeSignalStrategy {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;

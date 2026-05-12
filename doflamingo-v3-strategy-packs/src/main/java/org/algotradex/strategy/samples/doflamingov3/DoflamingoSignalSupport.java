@@ -33,6 +33,16 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * Internal factory for Doflamingo v3 signal and lifecycle-intent records.
+ * <p>
+ * The helper centralizes long/short action mapping, reversal actions, sizing metadata, exit
+ * policies, horizons, stable IDs, and structured condition evidence. It is package-private
+ * implementation support, not a platform extension point.
+ * <p>
+ * Built records are advisory strategy output. This helper does not execute orders, mutate runtime
+ * positions, route broker requests, or perform portfolio accounting.
+ */
 final class DoflamingoSignalSupport {
     private static final Duration DEFAULT_HORIZON = Duration.ofHours(4);
 

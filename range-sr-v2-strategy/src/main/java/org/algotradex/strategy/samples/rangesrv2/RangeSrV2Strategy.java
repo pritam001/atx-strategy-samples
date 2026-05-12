@@ -48,6 +48,22 @@ import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
+/**
+ * Lifecycle-aware range support/resistance sample using H4 context and M15 execution bars.
+ * <p>
+ * The strategy requires H4 context history for trend strength and structure, then evaluates the
+ * current M15 bar for discount/premium location, defended level confluence, and reversal-pattern
+ * confirmation. Accepted setups emit both a legacy {@link TradeSignal} and an entry
+ * {@link StrategyTradeIntent} with structured evidence and risk-aware sizing metadata.
+ * <p>
+ * The implementation keeps a per-instrument cooldown map and is expected to be used as a fresh,
+ * run-scoped instance. It is deterministic for the same ordered M15/H4 histories and effective
+ * parameters, but it is not thread-safe.
+ * <p>
+ * The sample does not own execution, broker routing, exchange session rules, lot/tick conversion,
+ * slippage, or portfolio accounting. The {@code riskUsdPerTrade} parameter is sample sizing input
+ * for intent metadata, not a broker-side risk guarantee.
+ */
 public final class RangeSrV2Strategy implements TradeIntentStrategy {
     private static final MathContext MC = MathContext.DECIMAL64;
     private static final int ADX_PERIOD = 14;

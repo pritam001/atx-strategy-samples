@@ -11,6 +11,14 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Entry-only market-regime skip policy shared by the Doflamingo v2 samples.
+ * <p>
+ * The filter converts provider parameter values into low-cardinality
+ * {@link PrimaryMarketRegime} sets and blocks new entries only when the runtime market-context
+ * snapshot is ready and in a skipped regime. It deliberately does not suppress exits, scale-outs, or
+ * other lifecycle intents for already-open positions.
+ */
 final class DoflamingoMarketRegimeFilter {
     static final String SKIP_MARKET_REGIMES = "skipMarketRegimes";
     static final List<String> ALLOWED_REGIME_NAMES = Arrays.stream(PrimaryMarketRegime.values())

@@ -23,7 +23,16 @@ import java.util.Set;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Java port of Doflamingo's MULTI_INDICATOR_V6_TREND_REVERSAL entry logic.
+ * ATX-adaptive long-only lifecycle variant of Doflamingo's multi-indicator V6 reversal setup.
+ * <p>
+ * The strategy advances run-local indicator state from closed bars, applies adaptive momentum and
+ * trend filters, and emits long entry, exit, and optional scale-out intents with structured
+ * condition evidence. Market-regime filters suppress new entries only; lifecycle management for an
+ * existing runtime position can still emit exits or scale-outs.
+ * <p>
+ * Instances are mutable and run-scoped, not thread-safe. The class owns strategy evidence and intent
+ * construction decisions only; execution, broker routing, accepted-position mutation, and portfolio
+ * accounting remain platform-owned.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements TradeIntentStrategy {
     private final BigDecimal minConfidence;

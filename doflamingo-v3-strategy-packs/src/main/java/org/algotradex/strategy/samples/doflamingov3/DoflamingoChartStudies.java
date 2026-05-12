@@ -4,6 +4,13 @@ import org.algotradex.platform.core.api.dto.common.indicator.StrategyChartStudy;
 
 import java.util.Map;
 
+/**
+ * Descriptor helper for Doflamingo v3 chart-study metadata.
+ * <p>
+ * The helper describes study requirements for registry and UI consumers. It does not compute
+ * runtime indicator values or render charts; the strategy implementations recompute their required
+ * closed-bar state.
+ */
 final class DoflamingoChartStudies {
     private static final String FORMULA_VERSION = "atx-indicator-formula-v1";
 

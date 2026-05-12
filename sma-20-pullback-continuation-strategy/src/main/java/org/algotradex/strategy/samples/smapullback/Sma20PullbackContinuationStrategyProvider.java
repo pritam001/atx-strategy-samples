@@ -21,7 +21,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the SMA 20 pullback continuation strategy sample.
+ * ServiceLoader entrypoint for {@code sma-20-pullback-continuation-v1}.
+ * <p>
+ * The provider exposes descriptor metadata, chart-study metadata, parameter validation, and fresh
+ * run-scoped strategy creation for M15/H1 equity and index bars. The descriptor describes the
+ * sample's signal surface; the platform still owns replay sequencing, strategy discovery, execution
+ * routing, and portfolio state.
+ * <p>
+ * Validation enforces relationships that the generic schema cannot express, such as fast SMA before
+ * slow SMA and slope lookback smaller than the slow period.
  */
 public final class Sma20PullbackContinuationStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "sma-20-pullback-continuation-v1";

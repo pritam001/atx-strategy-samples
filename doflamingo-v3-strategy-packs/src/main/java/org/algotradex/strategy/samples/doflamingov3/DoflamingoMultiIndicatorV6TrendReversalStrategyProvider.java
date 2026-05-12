@@ -21,7 +21,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the Doflamingo multi-indicator v6 trend reversal port.
+ * ServiceLoader entrypoint for {@code doflamingo-multi-indicator-v6-trend-reversal-v3}.
+ * <p>
+ * The provider exposes the v3 descriptor, chart-study metadata, validation, and fresh strategy
+ * construction for a short-capable multi-indicator lifecycle sample. Parameters include long/short
+ * momentum filters, stop bounds, stale-exit rules, scale-out and short scale-in controls, reversal
+ * enablement, and market-regime entry skips.
+ * <p>
+ * Validation protects the configuration contract before strategy creation. Runtime order
+ * acceptance, broker routing, fill simulation, exchange-specific constraints, and portfolio
+ * accounting are not owned by this plugin.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "doflamingo-multi-indicator-v6-trend-reversal-v3";

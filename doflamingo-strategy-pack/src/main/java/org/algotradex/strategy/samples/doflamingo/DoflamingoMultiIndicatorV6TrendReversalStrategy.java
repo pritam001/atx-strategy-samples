@@ -17,7 +17,16 @@ import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Java port of Doflamingo's MULTI_INDICATOR_V6_TREND_REVERSAL entry logic.
+ * Long-only lifecycle port of Doflamingo's {@code MULTI_INDICATOR_V6_TREND_REVERSAL} setup.
+ * <p>
+ * The strategy advances PSAR, MACD, Stoch RSI, and Ichimoku-derived state from closed bars. It emits
+ * a long signal plus entry intent when the reversal setup is confirmed and may later emit a long
+ * exit intent when the fixed stop or bearish reversal evidence appears against an accepted runtime
+ * position.
+ * <p>
+ * Indicator state and active stop state are mutable run-local data. A fresh instance is expected per
+ * replay/instrument run; the class is deterministic for the same input stream and not thread-safe.
+ * It does not place orders, own fills, route broker requests, or manage portfolio exposure.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements TradeIntentStrategy {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;

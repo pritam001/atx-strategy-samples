@@ -9,6 +9,13 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
+/**
+ * Package-local indicator implementation used by the Doflamingo v3 sample strategies.
+ * <p>
+ * The calculations are deterministic helpers for sample strategy decisions and tests. They are not
+ * a shared platform indicator service, market-data adapter, or guarantee of vendor/exchange formula
+ * parity beyond this implementation.
+ */
 final class DoflamingoIndicatorMath {
     static final int ICHIMOKU_CONVERSION_PERIOD = 9;
     static final int ICHIMOKU_BASE_PERIOD = 26;

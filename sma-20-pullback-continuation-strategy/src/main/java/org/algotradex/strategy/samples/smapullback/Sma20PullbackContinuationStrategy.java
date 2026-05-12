@@ -24,7 +24,16 @@ import java.util.OptionalDouble;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Closed-bar SMA20 pullback continuation sample strategy.
+ * Sample {@link TradeSignalStrategy} for SMA pullback continuation setups on closed bars.
+ * <p>
+ * The strategy classifies a fast-SMA trend, looks for a recent pullback/touch followed by a
+ * continuation trigger, and uses the slow SMA as support/resistance context. It emits at most one
+ * {@link TradeSignal} per invocation and suppresses repeated setup touches through run-local
+ * cooldown and touch tracking.
+ * <p>
+ * Instances are mutable and run-scoped, not thread-safe. The strategy owns setup detection and
+ * signal scoring only; order execution, broker routing, accepted-position lifecycle, and portfolio
+ * accounting are platform-owned.
  */
 public final class Sma20PullbackContinuationStrategy implements TradeSignalStrategy {
     private static final double CONFIDENCE_FLOOR = 0.45d;

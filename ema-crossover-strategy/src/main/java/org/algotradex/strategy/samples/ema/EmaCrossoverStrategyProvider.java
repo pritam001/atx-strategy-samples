@@ -11,7 +11,15 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * ServiceLoader provider for the sample EMA crossover strategy.
+ * ServiceLoader entrypoint for {@code ema-crossover-v1}.
+ * <p>
+ * The provider exposes descriptor metadata, parameter validation, and fresh run-scoped strategy
+ * construction for a simple EMA crossover sample on M15, H1, and D1 equity/index bars. The
+ * descriptor is plugin metadata consumed by registry and UI surfaces; the created strategy remains
+ * the runtime signal producer.
+ * <p>
+ * This boundary does not own market-data loading, replay sequencing, execution, broker routing, or
+ * portfolio accounting. Invalid effective parameters are rejected before an instance is created.
  */
 public final class EmaCrossoverStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "ema-crossover-v1";

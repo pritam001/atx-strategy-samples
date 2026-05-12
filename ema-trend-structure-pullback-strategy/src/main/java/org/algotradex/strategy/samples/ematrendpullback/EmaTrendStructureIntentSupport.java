@@ -28,6 +28,16 @@ import java.math.RoundingMode;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * Internal factory for EMA trend-structure {@link StrategyTradeIntent} payloads.
+ * <p>
+ * The helper centralizes lifecycle action mapping, sizing metadata, horizon metadata, and structured
+ * condition evidence so entry, exit, scale-out, and scale-in intents stay consistent. It is
+ * package-private because it is part of the sample implementation, not a platform SPI.
+ * <p>
+ * Methods build immutable contract records only. They do not check whether an intent should be
+ * accepted, mutate portfolio state, route orders, or interact with brokers.
+ */
 final class EmaTrendStructureIntentSupport {
     private EmaTrendStructureIntentSupport() {
     }

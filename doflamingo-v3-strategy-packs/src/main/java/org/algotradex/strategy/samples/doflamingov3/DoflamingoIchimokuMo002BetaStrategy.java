@@ -26,7 +26,18 @@ import java.util.Set;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Java port of Doflamingo's ICHIMOKU_MOMENTUM_MO_002_BETA entry logic.
+ * Short-capable lifecycle variant of Doflamingo's Ichimoku momentum setup.
+ * <p>
+ * The strategy evaluates closed-bar Ichimoku, EMA, trend-score, ATR, and optional market-regime
+ * context. It can emit long or short entry signals and intents, plus exits, reversals, and short
+ * scale-outs from the current runtime position snapshot when the configured lifecycle rules pass.
+ * <p>
+ * Mutable counters track cooldown and structure weakness within a single replay/instrument run. A
+ * fresh instance is expected per run; the class is deterministic for the same ordered market and
+ * position snapshots, but is not thread-safe.
+ * <p>
+ * This sample owns signal/intent evidence only. It does not execute trades, route broker orders,
+ * enforce fills, reserve capital, or perform portfolio accounting.
  */
 public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStrategy {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;

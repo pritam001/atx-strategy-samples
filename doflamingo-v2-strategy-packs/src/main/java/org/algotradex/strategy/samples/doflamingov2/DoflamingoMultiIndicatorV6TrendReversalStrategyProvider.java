@@ -21,7 +21,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the Doflamingo multi-indicator v6 trend reversal port.
+ * ServiceLoader entrypoint for {@code doflamingo-multi-indicator-v6-trend-reversal-v2}.
+ * <p>
+ * The provider exposes the lifecycle descriptor, chart-study metadata, validation, and fresh
+ * strategy construction for the long-only adaptive Multi V6 sample. The schema controls momentum
+ * mode, trend-filter mode, stop metadata, stale exit rules, scale-out behavior, risk fraction, and
+ * market-regime entry skips.
+ * <p>
+ * Provider validation checks cross-field relationships that the generic schema cannot express. It
+ * does not own replay scheduling, execution acceptance, broker routing, fills, or portfolio
+ * accounting.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "doflamingo-multi-indicator-v6-trend-reversal-v2";

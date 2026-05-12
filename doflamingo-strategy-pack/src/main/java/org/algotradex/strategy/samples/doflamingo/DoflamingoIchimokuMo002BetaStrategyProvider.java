@@ -19,7 +19,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the Doflamingo Ichimoku momentum 002 beta port.
+ * ServiceLoader entrypoint for {@code doflamingo-ichimoku-mo-002-beta-v1}.
+ * <p>
+ * The provider publishes the descriptor, parameter schema, chart-study metadata, and factory for the
+ * v1 Ichimoku momentum sample. The descriptor keeps the original sample as a long signal strategy,
+ * while the created implementation can also expose structured lifecycle intents to runtimes that
+ * understand them.
+ * <p>
+ * This plugin does not own strategy discovery beyond the ServiceLoader file, market-data
+ * provisioning, replay scheduling, execution, broker routing, or portfolio accounting.
  */
 public final class DoflamingoIchimokuMo002BetaStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "doflamingo-ichimoku-mo-002-beta-v1";

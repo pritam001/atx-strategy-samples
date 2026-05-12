@@ -21,7 +21,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the EMA trend-structure pullback lifecycle strategy sample.
+ * ServiceLoader entrypoint for {@code ema-trend-structure-pullback-v2}.
+ * <p>
+ * The provider owns descriptor metadata, parameter schema, cross-field validation, chart-study
+ * metadata, and fresh run-scoped strategy construction. The descriptor advertises an M15/H1 equity
+ * and index strategy with legacy signal output plus lifecycle trade intents.
+ * <p>
+ * Configuration is accepted only through the provider schema. Runtime sequencing, current-position
+ * projection, execution acceptance, broker routing, and portfolio accounting remain outside this
+ * module.
  */
 public final class EmaTrendStructurePullbackStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "ema-trend-structure-pullback-v2";

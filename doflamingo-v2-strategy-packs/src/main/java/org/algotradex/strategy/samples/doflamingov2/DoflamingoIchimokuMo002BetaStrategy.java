@@ -25,7 +25,16 @@ import java.util.Set;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Java port of Doflamingo's ICHIMOKU_MOMENTUM_MO_002_BETA entry logic.
+ * ATX-adaptive long-only lifecycle variant of Doflamingo's Ichimoku momentum setup.
+ * <p>
+ * The strategy evaluates closed-bar Ichimoku, EMA, trend-score, ATR, and optional market-regime
+ * context before emitting long entry signals and intents. When a runtime long position is present it
+ * owns only the decision to emit exit intent metadata for structure, stale, or max-holding
+ * conditions; downstream runtime decides whether any intent is accepted.
+ * <p>
+ * Instances are mutable and run-scoped. Cooldown and structure-weakness counters are deterministic
+ * for the same ordered bar and position snapshots, but the class is not thread-safe. It does not
+ * route orders, manage fills, enforce broker stops, or account for portfolio exposure.
  */
 public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStrategy {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;

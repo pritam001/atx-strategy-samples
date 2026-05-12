@@ -12,6 +12,7 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationRe
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
+import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 import org.algotradex.platform.core.api.util.StrategyParameterValidator;
 
@@ -20,6 +21,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * ServiceLoader entrypoint for {@code range-sr-v2}.
+ * <p>
+ * The descriptor advertises an M15 strategy that requires H4 context history and publishes chart
+ * studies for ADX, EMA, ATR, and structural pivots. Provider validation bounds effective
+ * parameters, checks lookback relationships, and creates a fresh run-scoped
+ * {@link TradeIntentStrategy} implementation.
+ * <p>
+ * This provider is the plugin metadata/factory boundary only. Market-data loading, timeframe
+ * alignment, execution, broker routing, exchange-specific contract sizing, and portfolio accounting
+ * remain platform concerns.
+ */
 public final class RangeSrV2StrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "range-sr-v2";
     public static final String STRATEGY_VERSION = "1.0.0";

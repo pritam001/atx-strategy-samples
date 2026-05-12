@@ -17,7 +17,16 @@ import java.util.OptionalDouble;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Java port of Doflamingo's ICHIMOKU_MOMENTUM_MO_002_BETA entry logic.
+ * Long-only lifecycle port of Doflamingo's {@code ICHIMOKU_MOMENTUM_MO_002_BETA} setup.
+ * <p>
+ * The strategy evaluates closed-bar Ichimoku, EMA(9), and trend-score conditions on the primary
+ * instrument history. It emits a long signal plus entry intent when the beta momentum setup appears
+ * and can emit a long exit intent while a runtime position is present and the cloud structure
+ * invalidates the setup.
+ * <p>
+ * Instances are mutable and run-scoped because they track whether a long setup is active. They are
+ * deterministic for the same ordered history and position snapshots, but are not thread-safe.
+ * Execution, broker routing, fills, and portfolio accounting are outside this sample.
  */
 public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStrategy {
     private final BigDecimal confidence;

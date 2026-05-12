@@ -19,7 +19,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ServiceLoader provider for the Doflamingo Ichimoku momentum 002 beta port.
+ * ServiceLoader entrypoint for {@code doflamingo-ichimoku-mo-002-beta-v2}.
+ * <p>
+ * The provider publishes the ATX-adaptive lifecycle descriptor, parameter schema, chart studies, and
+ * factory for the v2 Ichimoku sample. Parameters cover entry mode, confidence, runtime stop
+ * metadata, holding discipline, cooldown, risk fraction, and market-regime entry skips.
+ * <p>
+ * This class is metadata and construction boundary only. It does not load market data, sequence
+ * replay bars, route broker orders, reserve capital, or decide whether emitted trade intents are
+ * accepted downstream.
  */
 public final class DoflamingoIchimokuMo002BetaStrategyProvider implements StrategyProvider {
     public static final String STRATEGY_ID = "doflamingo-ichimoku-mo-002-beta-v2";

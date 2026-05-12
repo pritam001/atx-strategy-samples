@@ -34,7 +34,21 @@ import java.util.OptionalDouble;
 import static java.util.Objects.requireNonNull;
 
 /**
- * EMA20/50/200 trend-structure continuation lifecycle sample strategy.
+ * Lifecycle-aware EMA trend-structure pullback sample strategy.
+ * <p>
+ * The strategy evaluates closed bars against a fast/medium/slow EMA structure, tracks pullback
+ * state per side, and emits a {@link TradeSignal} plus a {@link StrategyTradeIntent} when a
+ * continuation or transition setup reaches the configured confidence threshold. While a position is
+ * present, it may emit exit, scale-out, or optional scale-in intents using the runtime position
+ * snapshot.
+ * <p>
+ * Instances are mutable and run-scoped. They are deterministic for the same ordered history,
+ * position snapshot stream, and effective parameters, but they are not thread-safe and must not be
+ * reused across concurrent replay runs.
+ * <p>
+ * This sample owns setup scoring and intent metadata only. It does not execute orders, route broker
+ * requests, reserve capital, compute portfolio-level exposure, or guarantee that downstream runtime
+ * accepts any emitted lifecycle intent.
  */
 public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrategy {
     private static final double IDEAL_DISTANCE_FROM_FAST_EMA_MIN_PCT = 0.10d;

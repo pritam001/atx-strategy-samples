@@ -21,7 +21,16 @@ import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Closed-bar EMA crossover sample backed by rolling EMA state.
+ * Sample {@link TradeSignalStrategy} that emits a signal when a fast EMA crosses a slow EMA on
+ * closed bars.
+ * <p>
+ * The strategy keeps run-local rolling EMA state and assumes the platform creates a fresh instance
+ * for one replay/instrument execution. It is deterministic for the same ordered bar history and
+ * effective parameters, but it is not thread-safe and must not be shared across concurrent runs.
+ * <p>
+ * This class owns only signal detection and signal metadata. It does not place orders, route broker
+ * requests, manage positions, or perform portfolio accounting; those concerns remain platform
+ * runtime responsibilities.
  */
 public final class EmaCrossoverStrategy implements TradeSignalStrategy {
     private final BigDecimal confidence;

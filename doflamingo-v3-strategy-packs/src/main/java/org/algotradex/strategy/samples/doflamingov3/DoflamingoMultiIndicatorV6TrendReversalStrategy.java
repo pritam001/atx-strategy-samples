@@ -24,7 +24,16 @@ import java.util.Set;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Java port of Doflamingo's MULTI_INDICATOR_V6_TREND_REVERSAL entry logic.
+ * Short-capable lifecycle variant of Doflamingo's multi-indicator V6 reversal setup.
+ * <p>
+ * The strategy advances PSAR, MACD, Stoch RSI, Ichimoku, EMA, and ATR-derived state from closed
+ * bars. It can emit long or short entries, exits, reversals, scale-outs, and optional short scale-in
+ * intents with structured condition evidence.
+ * <p>
+ * Indicator tracker state is mutable and run-scoped. A fresh instance is expected per
+ * replay/instrument run; the implementation is deterministic for the same ordered inputs, but is
+ * not thread-safe. Broker routing, order acceptance, fills, exchange constraints, and portfolio
+ * accounting remain outside the sample.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements TradeIntentStrategy {
     private static final double MIN_SHORT_PSAR_DISTANCE_PCT = 0.05d;
