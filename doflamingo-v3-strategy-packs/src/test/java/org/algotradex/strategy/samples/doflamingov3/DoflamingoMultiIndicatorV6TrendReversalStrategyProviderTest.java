@@ -38,11 +38,13 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
                 StrategyCapability.LONG_ENTRY_INTENT,
                 StrategyCapability.SHORT_ENTRY_INTENT,
                 StrategyCapability.EXIT_INTENT,
+                StrategyCapability.SCALE_IN_INTENT,
                 StrategyCapability.SCALE_OUT_INTENT,
+                StrategyCapability.REVERSAL_INTENT,
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
-        assertThat(descriptor.parameterSchema().parameters()).hasSize(25);
+        assertThat(descriptor.parameterSchema().parameters()).hasSize(29);
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().decimal("minConfidence", BigDecimal.ZERO)).isEqualByComparingTo("0.60");
         assertThat(validation.effectiveParameters().integer("macdFastPeriod", 0)).isEqualTo(16);
@@ -55,6 +57,10 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(validation.effectiveParameters().stringList("skipMarketRegimes", List.of("fallback"))).isEmpty();
         assertThat(validation.effectiveParameters().bool("allowShorts", false)).isTrue();
         assertThat(validation.effectiveParameters().string("shortCloudMode", "")).isEqualTo("CLOSE_BELOW_CLOUD");
+        assertThat(validation.effectiveParameters().bool("allowReversal", true)).isFalse();
+        assertThat(validation.effectiveParameters().bool("allowShortScaleIn", true)).isFalse();
+        assertThat(validation.effectiveParameters().decimal("shortScaleInAtR", BigDecimal.ZERO)).isEqualByComparingTo("0.50");
+        assertThat(validation.effectiveParameters().integer("maxShortScaleIns", 0)).isEqualTo(1);
     }
 
     @Test
@@ -175,6 +181,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
                 "macdSlowPeriod", 7,
                 "macdSignalPeriod", 8,
                 "minConfidence", "0.50",
+                "maxStopPct", "20.0",
                 "trendFilterMode", "NONE",
                 "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION"
         )), null);
@@ -227,7 +234,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
                 "trendFilterMode", "NONE",
                 "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION"
         )), null);
-        List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6ShortSetupBars();
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6ShortSetupBars().subList(0, 82);
 
         var result = firstIntent(strategy, bars);
 
@@ -243,10 +250,96 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(intent.reason().conditions()).extracting("conditionId")
                 .contains(
                         "multi-v6-v3.short.psar-down",
+                        "multi-v6-v3.short.psar-distance",
                         "multi-v6-v3.short.cloud-confirmation",
+                        "multi-v6-v3.short.clean-structure",
+                        "multi-v6-v3.short.overextension",
+                        "multi-v6-v3.short.raw-stop-pct",
                         "multi-v6-v3.short.trend-filter",
                         "multi-v6-v3.short.confidence-threshold"
                 );
+        assertThat(intent.reason().evidence()).anySatisfy(value -> assertThat(value).startsWith("presentSpanA="));
+        assertThat(intent.reason().evidence()).anySatisfy(value -> assertThat(value).startsWith("cloudFloor="));
+        assertThat(intent.reason().evidence()).anySatisfy(value -> assertThat(value).startsWith("rawStopPct="));
+        assertThat(intent.reason().evidence()).anySatisfy(value -> assertThat(value).startsWith("selectedStopPct="));
+    }
+
+    @Test
+    void shortScaleInRequiresExplicitEnablementAndRespectsMaxCount() {
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6ShortSetupBars().subList(0, 82);
+        TradeIntentStrategy disabled = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "enableScaleOut", false
+        )), null);
+        var disabledResult = disabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.80d, 0)
+        ));
+
+        assertThat(disabledResult.tradeIntents()).extracting("action").doesNotContain(StrategyTradeAction.SCALE_IN_SHORT);
+
+        TradeIntentStrategy enabled = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "enableScaleOut", false,
+                "allowShortScaleIn", true,
+                "shortScaleInAtR", "0.50",
+                "maxShortScaleIns", 1
+        )), null);
+        var scaleIn = enabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.80d, 0)
+        ));
+        var maxReached = enabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.80d, 1, 0, 3.0d, 1.0d)
+        ));
+
+        assertThat(scaleIn.tradeIntents()).hasSize(1);
+        assertThat(scaleIn.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.SCALE_IN_SHORT);
+        assertThat(scaleIn.tradeIntents().getFirst().reason().conditions()).extracting("conditionId")
+                .contains("multi-v6-v3.short.scale-in-enabled", "multi-v6-v3.short.scale-in-clean-structure");
+        assertThat(maxReached.tradeIntents()).extracting("action").doesNotContain(StrategyTradeAction.SCALE_IN_SHORT);
+    }
+
+    @Test
+    void reversalIntentsRequireExplicitEnablement() {
+        List<BarEvent> bars = new java.util.ArrayList<>(DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars());
+        bars.add(DoflamingoStrategyTestSupport.nextBarAfter(bars, 155.0d, 160.0d, 145.0d, 150.0d));
+        TradeIntentStrategy disabled = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "enableScaleOut", false
+        )), null);
+        TradeIntentStrategy enabled = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "enableScaleOut", false,
+                "allowReversal", true,
+                "maxStopPct", "20.0"
+        )), null);
+
+        var disabledResult = disabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.longPosition(6, 0.20d, 0)
+        ));
+        var enabledResult = enabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.longPosition(6, 0.20d, 0)
+        ));
+
+        assertThat(disabledResult.tradeIntents()).extracting("action").doesNotContain(StrategyTradeAction.REVERSE_LONG_TO_SHORT);
+        assertThat(enabledResult.tradeIntents()).hasSize(1);
+        assertThat(enabledResult.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.REVERSE_LONG_TO_SHORT);
     }
 
     @Test

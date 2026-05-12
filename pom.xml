@@ -26,6 +26,7 @@
     <modules>
         <module>ema-crossover-strategy</module>
         <module>range-support-resistance-strategy</module>
+        <module>range-sr-v2-strategy</module>
         <module>sma-20-pullback-continuation-strategy</module>
         <module>ema-trend-structure-pullback-strategy</module>
         <module>doflamingo-strategy-pack</module>

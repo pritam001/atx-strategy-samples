@@ -56,6 +56,10 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
     static final String SKIP_MARKET_REGIMES = DoflamingoMarketRegimeFilter.SKIP_MARKET_REGIMES;
     static final String ALLOW_SHORTS = "allowShorts";
     static final String SHORT_CLOUD_MODE = "shortCloudMode";
+    static final String ALLOW_REVERSAL = "allowReversal";
+    static final String ALLOW_SHORT_SCALE_IN = "allowShortScaleIn";
+    static final String SHORT_SCALE_IN_AT_R = "shortScaleInAtR";
+    static final String MAX_SHORT_SCALE_INS = "maxShortScaleIns";
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
             new StrategyParameterDefinition(MIN_CONFIDENCE, StrategyParameterType.DECIMAL, "Minimum Confidence",
@@ -132,7 +136,19 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     true, true, null, null, List.of()),
             new StrategyParameterDefinition(SHORT_CLOUD_MODE, StrategyParameterType.ENUM, "Short Cloud Mode",
                     "Bearish cloud confirmation required for V3 short entries.",
-                    true, "CLOSE_BELOW_CLOUD", null, null, List.of("CLOSE_BELOW_CLOUD", "HIGH_BELOW_CLOUD"))
+                    true, "CLOSE_BELOW_CLOUD", null, null, List.of("CLOSE_BELOW_CLOUD", "HIGH_BELOW_CLOUD")),
+            new StrategyParameterDefinition(ALLOW_REVERSAL, StrategyParameterType.BOOLEAN, "Allow Reversal",
+                    "Whether V3 may emit executable long/short reversal intents from an existing position.",
+                    true, false, null, null, List.of()),
+            new StrategyParameterDefinition(ALLOW_SHORT_SCALE_IN, StrategyParameterType.BOOLEAN, "Allow Short Scale In",
+                    "Whether V3 may add once to a winning short when renewed bearish structure appears.",
+                    true, false, null, null, List.of()),
+            new StrategyParameterDefinition(SHORT_SCALE_IN_AT_R, StrategyParameterType.DECIMAL, "Short Scale In At R",
+                    "Current R multiple required before short scale-in is eligible.",
+                    true, BigDecimal.valueOf(0.50), BigDecimal.valueOf(0.10), BigDecimal.valueOf(10), List.of()),
+            new StrategyParameterDefinition(MAX_SHORT_SCALE_INS, StrategyParameterType.INTEGER, "Max Short Scale Ins",
+                    "Maximum accepted short scale-in intents per position.",
+                    true, 1, BigDecimal.ZERO, BigDecimal.valueOf(10), List.of())
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -149,7 +165,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     StrategyCapability.LONG_ENTRY_INTENT,
                     StrategyCapability.SHORT_ENTRY_INTENT,
                     StrategyCapability.EXIT_INTENT,
+                    StrategyCapability.SCALE_IN_INTENT,
                     StrategyCapability.SCALE_OUT_INTENT,
+                    StrategyCapability.REVERSAL_INTENT,
                     StrategyCapability.RISK_AWARE_SIZING,
                     StrategyCapability.PARAMETERIZED
             ),
@@ -253,7 +271,11 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                 effective.decimal(RISK_FRACTION, BigDecimal.valueOf(0.01)),
                 effective.stringList(SKIP_MARKET_REGIMES, List.of()),
                 effective.bool(ALLOW_SHORTS, true),
-                effective.string(SHORT_CLOUD_MODE, "CLOSE_BELOW_CLOUD")
+                effective.string(SHORT_CLOUD_MODE, "CLOSE_BELOW_CLOUD"),
+                effective.bool(ALLOW_REVERSAL, false),
+                effective.bool(ALLOW_SHORT_SCALE_IN, false),
+                effective.decimal(SHORT_SCALE_IN_AT_R, BigDecimal.valueOf(0.50)),
+                effective.integer(MAX_SHORT_SCALE_INS, 1)
         );
     }
 }

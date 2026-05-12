@@ -46,6 +46,12 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
     static final String SHORT_EMA_CLOUD_MODE = "shortEmaCloudMode";
     static final String MIN_STOP_PCT = "minStopPct";
     static final String MAX_STOP_PCT = "maxStopPct";
+    static final String ALLOW_REVERSAL = "allowReversal";
+    static final String SHORT_STALE_BARS = "shortStaleBars";
+    static final String SHORT_STALE_MIN_R = "shortStaleMinR";
+    static final String ALLOW_SHORT_SCALE_OUT = "allowShortScaleOut";
+    static final String SHORT_SCALE_OUT_AT_R = "shortScaleOutAtR";
+    static final String SHORT_SCALE_OUT_FRACTION = "shortScaleOutFraction";
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
             new StrategyParameterDefinition(ENTRY_MODE, StrategyParameterType.ENUM, "Entry Mode",
@@ -101,7 +107,25 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                     true, BigDecimal.valueOf(0.10), BigDecimal.valueOf(0.10), BigDecimal.valueOf(20), List.of()),
             new StrategyParameterDefinition(MAX_STOP_PCT, StrategyParameterType.DECIMAL, "Maximum Stop Percent",
                     "Upper bound for V3 short adaptive stop distance.",
-                    true, BigDecimal.valueOf(2.50), BigDecimal.valueOf(0.10), BigDecimal.valueOf(20), List.of())
+                    true, BigDecimal.valueOf(2.50), BigDecimal.valueOf(0.10), BigDecimal.valueOf(20), List.of()),
+            new StrategyParameterDefinition(ALLOW_REVERSAL, StrategyParameterType.BOOLEAN, "Allow Reversal",
+                    "Whether V3 may emit executable long/short reversal intents from an existing position.",
+                    true, false, null, null, List.of()),
+            new StrategyParameterDefinition(SHORT_STALE_BARS, StrategyParameterType.INTEGER, "Short Stale Bars",
+                    "Bars held before a weak short is eligible for stale exit.",
+                    true, 16, BigDecimal.ONE, BigDecimal.valueOf(200), List.of()),
+            new StrategyParameterDefinition(SHORT_STALE_MIN_R, StrategyParameterType.DECIMAL, "Short Stale Minimum R",
+                    "Maximum R multiple below which an old short is considered stale.",
+                    true, BigDecimal.valueOf(0.25), BigDecimal.valueOf(-5), BigDecimal.valueOf(10), List.of()),
+            new StrategyParameterDefinition(ALLOW_SHORT_SCALE_OUT, StrategyParameterType.BOOLEAN, "Allow Short Scale Out",
+                    "Whether V3 may reduce a winning short at the configured R multiple.",
+                    true, true, null, null, List.of()),
+            new StrategyParameterDefinition(SHORT_SCALE_OUT_AT_R, StrategyParameterType.DECIMAL, "Short Scale Out At R",
+                    "Current R multiple required before short scale-out is eligible.",
+                    true, BigDecimal.valueOf(1.00), BigDecimal.valueOf(0.10), BigDecimal.valueOf(10), List.of()),
+            new StrategyParameterDefinition(SHORT_SCALE_OUT_FRACTION, StrategyParameterType.DECIMAL, "Short Scale Out Fraction",
+                    "Open-position fraction requested by short scale-out intents.",
+                    true, BigDecimal.valueOf(0.50), BigDecimal.valueOf(0.01), BigDecimal.ONE, List.of())
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -118,6 +142,8 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                     StrategyCapability.LONG_ENTRY_INTENT,
                     StrategyCapability.SHORT_ENTRY_INTENT,
                     StrategyCapability.EXIT_INTENT,
+                    StrategyCapability.SCALE_OUT_INTENT,
+                    StrategyCapability.REVERSAL_INTENT,
                     StrategyCapability.RISK_AWARE_SIZING,
                     StrategyCapability.PARAMETERIZED
             ),
@@ -193,7 +219,13 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                 effective.string(SHORT_CLOUD_PRICE_MODE, "HIGH_BELOW_CLOUD"),
                 effective.string(SHORT_EMA_CLOUD_MODE, "EMA9_BELOW_SPAN_B"),
                 effective.decimal(MIN_STOP_PCT, BigDecimal.valueOf(0.10)),
-                effective.decimal(MAX_STOP_PCT, BigDecimal.valueOf(2.50))
+                effective.decimal(MAX_STOP_PCT, BigDecimal.valueOf(2.50)),
+                effective.bool(ALLOW_REVERSAL, false),
+                effective.integer(SHORT_STALE_BARS, 16),
+                effective.decimal(SHORT_STALE_MIN_R, BigDecimal.valueOf(0.25)),
+                effective.bool(ALLOW_SHORT_SCALE_OUT, true),
+                effective.decimal(SHORT_SCALE_OUT_AT_R, BigDecimal.valueOf(1.00)),
+                effective.decimal(SHORT_SCALE_OUT_FRACTION, BigDecimal.valueOf(0.50))
         );
     }
 }

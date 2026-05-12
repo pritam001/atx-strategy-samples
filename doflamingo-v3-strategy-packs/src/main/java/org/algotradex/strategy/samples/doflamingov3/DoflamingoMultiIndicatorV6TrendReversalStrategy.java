@@ -27,6 +27,8 @@ import static java.util.Objects.requireNonNull;
  * Java port of Doflamingo's MULTI_INDICATOR_V6_TREND_REVERSAL entry logic.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements TradeIntentStrategy {
+    private static final double MIN_SHORT_PSAR_DISTANCE_PCT = 0.05d;
+
     private final BigDecimal minConfidence;
     private final double stochOverbought;
     private final double stochOversold;
@@ -49,6 +51,10 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     private final Set<PrimaryMarketRegime> skipMarketRegimes;
     private final boolean allowShorts;
     private final ShortCloudMode shortCloudMode;
+    private final boolean allowReversal;
+    private final boolean allowShortScaleIn;
+    private final BigDecimal shortScaleInAtR;
+    private final int maxShortScaleIns;
     private final DoflamingoIndicatorMath.MultiIndicatorTracker indicatorTracker;
     private int processedBars;
 
@@ -63,7 +69,11 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                                                     boolean trailAfterScaleOut, BigDecimal riskFraction,
                                                     List<String> skipMarketRegimes,
                                                     boolean allowShorts,
-                                                    String shortCloudMode) {
+                                                    String shortCloudMode,
+                                                    boolean allowReversal,
+                                                    boolean allowShortScaleIn,
+                                                    BigDecimal shortScaleInAtR,
+                                                    int maxShortScaleIns) {
         this.minConfidence = requireNonNull(minConfidence, "minConfidence");
         this.stochOverbought = requireNonNull(stochOverbought, "stochOverbought").doubleValue();
         this.stochOversold = requireNonNull(stochOversold, "stochOversold").doubleValue();
@@ -86,6 +96,10 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         this.skipMarketRegimes = DoflamingoMarketRegimeFilter.regimes(skipMarketRegimes);
         this.allowShorts = allowShorts;
         this.shortCloudMode = ShortCloudMode.valueOf(requireNonNull(shortCloudMode, "shortCloudMode"));
+        this.allowReversal = allowReversal;
+        this.allowShortScaleIn = allowShortScaleIn;
+        this.shortScaleInAtR = requireNonNull(shortScaleInAtR, "shortScaleInAtR");
+        this.maxShortScaleIns = Math.max(0, maxShortScaleIns);
         this.indicatorTracker = DoflamingoIndicatorMath.multiIndicatorTracker(macdFastPeriod, macdSlowPeriod, macdSignalPeriod);
     }
 
@@ -103,7 +117,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                 StrategyCapability.LONG_ENTRY_INTENT,
                 StrategyCapability.SHORT_ENTRY_INTENT,
                 StrategyCapability.EXIT_INTENT,
+                StrategyCapability.SCALE_IN_INTENT,
                 StrategyCapability.SCALE_OUT_INTENT,
+                StrategyCapability.REVERSAL_INTENT,
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
@@ -146,13 +162,15 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                 && state.previousMacdHistogram() < 0.0d
                 && state.secondPreviousMacdHistogram() > 0.0d
                 && state.macdSignal() > 0.0d;
+        double cloudFloor = cloudFloor(state);
+        double cloudCeiling = cloudCeiling(state);
         boolean reversalConfirmed = !directionNowUp
                 && directionPrevUp
-                && close < state.presentSpanB()
+                && close < cloudFloor
                 && (sellSignalStoch || sellSignalMacd);
         boolean bullishReversalConfirmed = directionNowUp
                 && directionPrevDown
-                && close > state.presentSpanB()
+                && close > cloudCeiling
                 && (buySignalStoch || buySignalMacd);
 
         StrategyInstrumentPosition position = context.instrumentPosition();
@@ -160,7 +178,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
             if (position.side() == PositionSide.SHORT) {
                 return shortPositionIntent(context, state, maybeEma50, bullishReversalConfirmed, buySignalStoch, buySignalMacd);
             }
-            return positionIntent(context, state, maybeEma50, reversalConfirmed, sellSignalStoch, sellSignalMacd);
+            return positionIntent(context, state, maybeEma50, maybeAtr, reversalConfirmed, sellSignalStoch, sellSignalMacd);
         }
         if (DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes)) {
             return StrategyIntentResult.empty();
@@ -257,6 +275,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
             StrategyExecutionContext context,
             DoflamingoIndicatorMath.MultiIndicatorState state,
             OptionalDouble maybeEma50,
+            OptionalDouble maybeAtr,
             boolean reversalConfirmed,
             boolean sellSignalStoch,
             boolean sellSignalMacd
@@ -330,6 +349,30 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         }
 
         BigDecimal confidence = exitConfidence(position, currentR, state, reversalConfirmed, staleExit, structureBreak, postScaleWeakness);
+        if (allowReversal && reversalConfirmed) {
+            StopSelection stop = shortStopSelection(close, cloudCeiling(state), maybeAtr);
+            StrategyTradeIntent reverseIntent = DoflamingoSignalSupport.reverseLongToShortIntent(
+                    strategyId(),
+                    DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    confidence,
+                    SetupType.REVERSAL,
+                    riskFraction,
+                    DoflamingoSignalSupport.percentStop(stop.selectedStopPct(), "Doflamingo Multi V6 v3 short " + stopMode + " runtime stop"),
+                    maxHoldingBars,
+                    "Doflamingo Multi V6 v3 long-to-short reversal",
+                    List.of("side=SHORT", "previousSide=LONG", "allowReversal=" + allowReversal,
+                            "reversalConfirmed=" + reversalConfirmed, "rawStopPct=" + stop.rawStopPct(),
+                            "selectedStopPct=" + stop.selectedStopPct(), "currentR=" + currentR,
+                            "positionBarsHeld=" + position.barsHeld(), "confidence=" + confidence),
+                    List.of("doflamingo", "v3", "adaptive", "multi-v6", "reversal", "short", "risk", "confidence"),
+                    List.of(
+                            DoflamingoSignalSupport.condition("multi-v6-v3.reverse-long-to-short-enabled", "Reversal is enabled", "Allow reversal", allowReversal ? 1.0d : 0.0d, "=", "Required", 1.0d, allowReversal),
+                            DoflamingoSignalSupport.condition("multi-v6-v3.reverse-long-to-short-confirmed", "Bearish reversal confirmation", "Bearish reversal", reversalConfirmed ? 1.0d : 0.0d, "=", "Required", 1.0d, reversalConfirmed)
+                    )
+            );
+            return new StrategyIntentResult(List.of(), List.of(reverseIntent), List.of());
+        }
         StrategyTradeIntent exitIntent = DoflamingoSignalSupport.longExitIntent(
                 strategyId(),
                 DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.STRATEGY_VERSION,
@@ -377,6 +420,8 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         BarEvent current = context.currentBar();
         double close = current.ohlcv().close().doubleValue();
         double high = current.ohlcv().high().doubleValue();
+        double cloudFloor = cloudFloor(state);
+        double cloudCeiling = cloudCeiling(state);
         boolean originalMomentum = sellSignalMacd || sellSignalStoch;
         boolean macdHistogramFalling = state.macdHistogram() < state.previousMacdHistogram();
         boolean stochKFalling = state.stochK() < state.previousStochK();
@@ -386,7 +431,13 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         boolean cloudConfirmed = shortCloudConfirmed(close, high, state);
         boolean trendFilterPassed = shortTrendFilterPassed(close, state, maybeEma50, maybeTrend, maybeTrendAverage,
                 sellSignalMacd, adaptiveMomentumEnabled && adaptiveMomentumConfirmed);
-        if (!directionNowDown || !momentumConfirmed || !cloudConfirmed || !trendFilterPassed) {
+        double psarDistancePct = percentDistance(state.psar(), high, close);
+        double belowCloudDistancePct = percentDistance(cloudFloor, close, close);
+        boolean cleanStructure = cleanShortStructure(close, high, state);
+        boolean psarDistanceOk = psarDistancePct >= MIN_SHORT_PSAR_DISTANCE_PCT;
+        boolean notOverextended = belowCloudDistancePct <= maxStopPct.doubleValue() * 2.0d;
+        if (!directionNowDown || !momentumConfirmed || !cloudConfirmed || !trendFilterPassed
+                || !cleanStructure || !psarDistanceOk || !notOverextended) {
             return StrategyIntentResult.empty();
         }
 
@@ -396,12 +447,17 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         if (confidence.compareTo(minConfidence) < 0) {
             return StrategyIntentResult.empty();
         }
+        StopSelection stop = shortStopSelection(close, cloudCeiling, maybeAtr);
 
         List<StrategyTradeIntentConditionEvidence> conditions = List.of(
                 DoflamingoSignalSupport.condition("multi-v6-v3.short.psar-down", "PSAR confirms downward direction", "PSAR", state.psar(), ">", "Candle high", high, directionNowDown),
+                DoflamingoSignalSupport.condition("multi-v6-v3.short.psar-distance", "Short PSAR distance avoids noisy flips", "PSAR distance %", psarDistancePct, ">=", "Minimum distance %", MIN_SHORT_PSAR_DISTANCE_PCT, psarDistanceOk),
                 DoflamingoSignalSupport.condition("multi-v6-v3.short.macd-sell", "MACD sell confirmation", "MACD sell pattern", sellSignalMacd ? 1.0d : 0.0d, "=", "Required", 1.0d, sellSignalMacd),
                 DoflamingoSignalSupport.condition("multi-v6-v3.short.stoch-sell", "Stoch RSI overbought sell confirmation", "Stoch sell pattern", sellSignalStoch ? 1.0d : 0.0d, "=", "Required", 1.0d, sellSignalStoch),
-                DoflamingoSignalSupport.condition("multi-v6-v3.short.cloud-confirmation", "Price is below bearish cloud threshold", shortCloudMode == ShortCloudMode.HIGH_BELOW_CLOUD ? "Candle high" : "Candle close", shortCloudMode == ShortCloudMode.HIGH_BELOW_CLOUD ? high : close, "<", "Ichimoku Span B", state.presentSpanB(), cloudConfirmed),
+                DoflamingoSignalSupport.condition("multi-v6-v3.short.cloud-confirmation", "Price is below bearish cloud floor", shortCloudMode == ShortCloudMode.HIGH_BELOW_CLOUD ? "Candle high" : "Candle close", shortCloudMode == ShortCloudMode.HIGH_BELOW_CLOUD ? high : close, "<", "Cloud floor", cloudFloor, cloudConfirmed),
+                DoflamingoSignalSupport.condition("multi-v6-v3.short.clean-structure", "Short structure is clean below the cloud", "Clean structure", cleanStructure ? 1.0d : 0.0d, "=", "Required", 1.0d, cleanStructure),
+                DoflamingoSignalSupport.condition("multi-v6-v3.short.overextension", "Below-cloud distance is not overextended", "Below-cloud distance %", belowCloudDistancePct, "<=", "Max allowed %", maxStopPct.doubleValue() * 2.0d, notOverextended),
+                DoflamingoSignalSupport.condition("multi-v6-v3.short.raw-stop-pct", "Raw short stop distance before bounds", "Raw stop %", stop.rawStopPct(), "<=", "Max stop %", maxStopPct, stop.rawStopPct().compareTo(maxStopPct) <= 0),
                 DoflamingoSignalSupport.condition("multi-v6-v3.short.trend-filter", "Bearish trend filter passed", "Trend filter", trendFilterPassed ? 1.0d : 0.0d, "=", "Required", 1.0d, trendFilterPassed),
                 DoflamingoMarketRegimeFilter.allowedCondition("multi-v6-v3.short.market-regime-allowed", context, skipMarketRegimes),
                 DoflamingoSignalSupport.condition("multi-v6-v3.short.confidence-threshold", "Dynamic short confidence meets threshold", "Confidence", confidence.doubleValue(), ">=", "Minimum confidence", minConfidence.doubleValue(), true)
@@ -415,7 +471,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                 confidence,
                 SetupType.REVERSAL,
                 riskFraction,
-                shortStopPolicy(close, state.presentSpanB(), maybeAtr),
+                DoflamingoSignalSupport.percentStop(stop.selectedStopPct(), "Doflamingo Multi V6 v3 short " + stopMode + " runtime stop"),
                 maxHoldingBars,
                 "Doflamingo Multi V6 v3 bearish PSAR, momentum, cloud, and trend-filter reversal entry",
                 List.of(
@@ -428,8 +484,14 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                         "macdSignal=" + state.macdSignal(),
                         "stochK=" + state.stochK(),
                         "stochD=" + state.stochD(),
+                        "presentSpanA=" + state.presentSpanA(),
                         "presentSpanB=" + state.presentSpanB(),
+                        "cloudFloor=" + BigDecimal.valueOf(cloudFloor).setScale(4, RoundingMode.HALF_UP),
+                        "cloudCeiling=" + BigDecimal.valueOf(cloudCeiling).setScale(4, RoundingMode.HALF_UP),
                         "shortCloudMode=" + shortCloudMode,
+                        "rawStopPct=" + stop.rawStopPct(),
+                        "selectedStopPct=" + stop.selectedStopPct(),
+                        "stopMode=" + stopMode,
                         "confidenceScore=" + confidence,
                         "confidence=" + confidence,
                         DoflamingoMarketRegimeFilter.marketRegimeEvidence(context),
@@ -453,7 +515,48 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         BarEvent current = context.currentBar();
         BigDecimal currentR = position.currentRMultiple() == null ? BigDecimal.ZERO : position.currentRMultiple();
         double close = current.ohlcv().close().doubleValue();
-        boolean shortThesisValid = close < state.presentSpanB() && directionDown(state, current);
+        double high = current.ohlcv().high().doubleValue();
+        double cloudFloor = cloudFloor(state);
+        double cloudCeiling = cloudCeiling(state);
+        boolean cleanStructure = cleanShortStructure(close, high, state);
+        boolean renewedBearishMomentum = state.macdHistogram() < state.previousMacdHistogram()
+                && state.macdHistogram() < 0.0d
+                && state.stochK() <= state.previousStochK();
+        boolean shortThesisValid = close < cloudFloor && directionDown(state, current);
+        boolean canScaleIn = allowShortScaleIn
+                && currentR.compareTo(shortScaleInAtR) >= 0
+                && position.scaleInCount() < maxShortScaleIns
+                && shortThesisValid
+                && renewedBearishMomentum
+                && cleanStructure;
+        if (canScaleIn) {
+            BigDecimal confidence = scaleOutConfidence(position, currentR, state);
+            StrategyTradeIntent scaleIntent = DoflamingoSignalSupport.shortScaleInIntent(
+                    strategyId(),
+                    DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    confidence,
+                    SetupType.REVERSAL,
+                    scaleOutFraction,
+                    maxShortScaleIns,
+                    "Doflamingo Multi V6 v3 short scale-in at configured R multiple",
+                    List.of("side=SHORT", "action=SCALE_IN_SHORT", "currentR=" + currentR, "shortScaleInAtR=" + shortScaleInAtR,
+                            "scaleInCount=" + position.scaleInCount(), "maxShortScaleIns=" + maxShortScaleIns,
+                            "renewedBearishMomentum=" + renewedBearishMomentum, "cleanStructure=" + cleanStructure,
+                            "cloudFloor=" + BigDecimal.valueOf(cloudFloor).setScale(4, RoundingMode.HALF_UP),
+                            "cloudCeiling=" + BigDecimal.valueOf(cloudCeiling).setScale(4, RoundingMode.HALF_UP),
+                            "confidence=" + confidence),
+                    List.of("doflamingo", "v3", "adaptive", "multi-v6", "scale-in", "short", "risk", "confidence"),
+                    List.of(
+                            DoflamingoSignalSupport.condition("multi-v6-v3.short.scale-in-enabled", "Short scale-in is enabled", "Allow short scale-in", allowShortScaleIn ? 1.0d : 0.0d, "=", "Required", 1.0d, allowShortScaleIn),
+                            DoflamingoSignalSupport.condition("multi-v6-v3.short.scale-in-r-multiple", "Current R multiple reached short scale-in threshold", "Current R", currentR, ">=", "Scale-in R", shortScaleInAtR, true),
+                            DoflamingoSignalSupport.condition("multi-v6-v3.short.scale-in-count", "Short scale-in count is below maximum", "Scale-in count", position.scaleInCount(), "<", "Max short scale-ins", maxShortScaleIns, position.scaleInCount() < maxShortScaleIns),
+                            DoflamingoSignalSupport.condition("multi-v6-v3.short.scale-in-momentum", "Renewed bearish momentum is present", "Renewed bearish momentum", renewedBearishMomentum ? 1.0d : 0.0d, "=", "Required", 1.0d, renewedBearishMomentum),
+                            DoflamingoSignalSupport.condition("multi-v6-v3.short.scale-in-clean-structure", "Short structure remains clean", "Clean structure", cleanStructure ? 1.0d : 0.0d, "=", "Required", 1.0d, cleanStructure)
+                    )
+            );
+            return new StrategyIntentResult(List.of(), List.of(scaleIntent), List.of());
+        }
         boolean canScaleOut = enableScaleOut
                 && position.scaleOutCount() == 0
                 && currentR.compareTo(scaleOutAtR) >= 0
@@ -482,9 +585,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
             return new StrategyIntentResult(List.of(), List.of(scaleIntent), List.of());
         }
 
-        boolean closeAboveSpanB = close > state.presentSpanB();
+        boolean closeAboveCloud = close > cloudCeiling;
         boolean staleExit = position.barsHeld() >= staleBars && currentR.compareTo(staleMinR) <= 0;
-        boolean structureBreak = closeAboveSpanB && !directionDown(state, current);
+        boolean structureBreak = closeAboveCloud && !directionDown(state, current);
         boolean postScaleRecovery = trailAfterScaleOut
                 && position.scaleOutCount() > 0
                 && maybeEma50.isPresent()
@@ -495,6 +598,28 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
             return StrategyIntentResult.empty();
         }
         BigDecimal confidence = exitConfidence(position, currentR, state, bullishReversalConfirmed, staleExit, structureBreak, postScaleRecovery);
+        if (allowReversal && bullishReversalConfirmed) {
+            StrategyTradeIntent reverseIntent = DoflamingoSignalSupport.reverseShortToLongIntent(
+                    strategyId(),
+                    DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.STRATEGY_VERSION,
+                    context,
+                    confidence,
+                    SetupType.REVERSAL,
+                    riskFraction,
+                    stopPolicy(close, state.presentSpanB(), OptionalDouble.empty()),
+                    maxHoldingBars,
+                    "Doflamingo Multi V6 v3 short-to-long reversal",
+                    List.of("side=LONG", "previousSide=SHORT", "allowReversal=" + allowReversal,
+                            "bullishReversalConfirmed=" + bullishReversalConfirmed, "currentR=" + currentR,
+                            "positionBarsHeld=" + position.barsHeld(), "confidence=" + confidence),
+                    List.of("doflamingo", "v3", "adaptive", "multi-v6", "reversal", "long", "risk", "confidence"),
+                    List.of(
+                            DoflamingoSignalSupport.condition("multi-v6-v3.reverse-short-to-long-enabled", "Reversal is enabled", "Allow reversal", allowReversal ? 1.0d : 0.0d, "=", "Required", 1.0d, allowReversal),
+                            DoflamingoSignalSupport.condition("multi-v6-v3.reverse-short-to-long-confirmed", "Bullish reversal confirmation", "Bullish reversal", bullishReversalConfirmed ? 1.0d : 0.0d, "=", "Required", 1.0d, bullishReversalConfirmed)
+                    )
+            );
+            return new StrategyIntentResult(List.of(), List.of(reverseIntent), List.of());
+        }
         StrategyTradeIntent exitIntent = DoflamingoSignalSupport.shortExitIntent(
                 strategyId(),
                 DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.STRATEGY_VERSION,
@@ -512,7 +637,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                         DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-bullish-reversal", "Bullish reversal confirmation", "Bullish reversal", bullishReversalConfirmed ? 1.0d : 0.0d, "=", "Required", 1.0d, bullishReversalConfirmed),
                         DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-stale-bars", "Stale short bars held", "Bars held", position.barsHeld(), ">=", "Stale bars", staleBars, staleExit),
                         DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-stale-r", "Stale short R multiple below threshold", "Current R", currentR, "<=", "Stale minimum R", staleMinR, staleExit),
-                        DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-structure-break", "Short structure broke above Span B with weak PSAR", "Candle close", close, ">", "Ichimoku Span B", state.presentSpanB(), structureBreak),
+                        DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-structure-break", "Short structure broke above cloud ceiling with weak PSAR", "Candle close", close, ">", "Cloud ceiling", cloudCeiling, structureBreak),
                         DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-post-scale-recovery", "Post-scale short trailing recovery", "MACD histogram", state.macdHistogram(), ">", "Previous MACD histogram", state.previousMacdHistogram(), postScaleRecovery),
                         DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-buy-stoch", "Stoch RSI buy confirmation", "Stoch buy pattern", buySignalStoch ? 1.0d : 0.0d, "=", "Required", 1.0d, buySignalStoch),
                         DoflamingoSignalSupport.condition("multi-v6-v3.short.exit-buy-macd", "MACD buy confirmation", "MACD buy pattern", buySignalMacd ? 1.0d : 0.0d, "=", "Required", 1.0d, buySignalMacd)
@@ -556,11 +681,12 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         if (trendFilterMode == TrendFilterMode.NONE) {
             return true;
         }
+        double cloudFloor = cloudFloor(state);
         boolean belowEma50 = maybeEma50.isPresent() && close < maybeEma50.getAsDouble();
         boolean weakeningTrend = maybeTrend.isPresent() && maybeTrendAverage.isPresent()
                 && maybeTrend.getAsDouble() < maybeTrendAverage.getAsDouble();
-        boolean breakdownWithMacdConfirmation = close < state.presentSpanB() && macdConfirmation;
-        boolean adaptiveBreakdown = close < state.presentSpanB() && adaptiveMomentumConfirmation;
+        boolean breakdownWithMacdConfirmation = close < cloudFloor && macdConfirmation;
+        boolean adaptiveBreakdown = close < cloudFloor && adaptiveMomentumConfirmation;
         if (trendFilterMode == TrendFilterMode.STRICT) {
             return belowEma50 && weakeningTrend;
         }
@@ -568,10 +694,35 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     }
 
     private boolean shortCloudConfirmed(double close, double high, DoflamingoIndicatorMath.MultiIndicatorState state) {
+        double cloudFloor = cloudFloor(state);
         return switch (shortCloudMode) {
-            case CLOSE_BELOW_CLOUD -> close < state.presentSpanB();
-            case HIGH_BELOW_CLOUD -> high < state.presentSpanB();
+            case CLOSE_BELOW_CLOUD -> close < cloudFloor;
+            case HIGH_BELOW_CLOUD -> high < cloudFloor;
         };
+    }
+
+    private boolean cleanShortStructure(double close, double high, DoflamingoIndicatorMath.MultiIndicatorState state) {
+        double cloudFloor = cloudFloor(state);
+        double cloudCeiling = cloudCeiling(state);
+        return close < cloudFloor
+                && high < cloudCeiling
+                && state.psar() > high
+                && state.macdHistogram() < 0.0d;
+    }
+
+    private static double cloudFloor(DoflamingoIndicatorMath.MultiIndicatorState state) {
+        return Math.min(state.presentSpanA(), state.presentSpanB());
+    }
+
+    private static double cloudCeiling(DoflamingoIndicatorMath.MultiIndicatorState state) {
+        return Math.max(state.presentSpanA(), state.presentSpanB());
+    }
+
+    private static double percentDistance(double higher, double lower, double denominator) {
+        if (denominator <= 0.0d) {
+            return 0.0d;
+        }
+        return Math.max(0.0d, ((higher - lower) / denominator) * 100.0d);
     }
 
     private TradeIntentExitPolicy stopPolicy(double close, double presentSpanB, OptionalDouble maybeAtr) {
@@ -593,21 +744,29 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         );
     }
 
-    private TradeIntentExitPolicy shortStopPolicy(double close, double presentSpanB, OptionalDouble maybeAtr) {
+    private StopSelection shortStopSelection(double close, double cloudCeiling, OptionalDouble maybeAtr) {
         double percentStop = stopLossPct.doubleValue();
-        double cloudStop = Math.max(0.1d, ((presentSpanB - close) / close) * 100.0d);
+        double cloudStop = Math.max(0.1d, ((cloudCeiling - close) / close) * 100.0d);
         double atrStop = maybeAtr.isPresent()
                 ? Math.max(0.1d, (maybeAtr.getAsDouble() * atrStopMultiple.doubleValue() / close) * 100.0d)
                 : percentStop;
-        double selected = switch (stopMode) {
+        double raw = switch (stopMode) {
             case PERCENT -> percentStop;
             case ATR -> atrStop;
             case CLOUD -> cloudStop;
             case ATR_OR_PERCENT_MAX -> Math.max(percentStop, atrStop);
         };
-        selected = Math.max(minStopPct.doubleValue(), Math.min(maxStopPct.doubleValue(), selected));
+        double selected = Math.max(minStopPct.doubleValue(), Math.min(maxStopPct.doubleValue(), raw));
+        return new StopSelection(
+                BigDecimal.valueOf(raw).setScale(4, RoundingMode.HALF_UP),
+                BigDecimal.valueOf(selected).setScale(4, RoundingMode.HALF_UP)
+        );
+    }
+
+    private TradeIntentExitPolicy shortStopPolicy(double close, double cloudCeiling, OptionalDouble maybeAtr) {
+        StopSelection stop = shortStopSelection(close, cloudCeiling, maybeAtr);
         return DoflamingoSignalSupport.percentStop(
-                BigDecimal.valueOf(selected).setScale(4, RoundingMode.HALF_UP),
+                stop.selectedStopPct(),
                 "Doflamingo Multi V6 v3 short " + stopMode + " runtime stop"
         );
     }
@@ -704,7 +863,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
             score += 0.05d;
         }
         if (maybeAtr.isPresent()) {
-            double distanceFromCloud = Math.max(0.0d, state.presentSpanB() - close);
+            double distanceFromCloud = Math.max(0.0d, cloudFloor(state) - close);
             if (distanceFromCloud <= maybeAtr.getAsDouble() * 3.0d) {
                 score += 0.04d;
             }
@@ -813,5 +972,8 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     enum ShortCloudMode {
         CLOSE_BELOW_CLOUD,
         HIGH_BELOW_CLOUD
+    }
+
+    private record StopSelection(BigDecimal rawStopPct, BigDecimal selectedStopPct) {
     }
 }

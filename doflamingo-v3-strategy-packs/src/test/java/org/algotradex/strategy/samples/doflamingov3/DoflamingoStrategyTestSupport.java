@@ -120,6 +120,17 @@ final class DoflamingoStrategyTestSupport {
             double maxFavorablePct,
             double maxAdversePct
     ) {
+        return shortPosition(barsHeld, currentR, 0, scaleOutCount, maxFavorablePct, maxAdversePct);
+    }
+
+    static StrategyInstrumentPosition shortPosition(
+            int barsHeld,
+            double currentR,
+            int scaleInCount,
+            int scaleOutCount,
+            double maxFavorablePct,
+            double maxAdversePct
+    ) {
         return new StrategyInstrumentPosition(
                 true,
                 PositionSide.SHORT,
@@ -131,7 +142,7 @@ final class DoflamingoStrategyTestSupport {
                 decimal(2.0d),
                 decimal(currentR),
                 decimal(2.0d),
-                0,
+                scaleInCount,
                 scaleOutCount,
                 "",
                 decimal(99.0d),

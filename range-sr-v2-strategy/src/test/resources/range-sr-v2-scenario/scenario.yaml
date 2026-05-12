@@ -1,0 +1,22 @@
+---
+id: "range-sr-v2-scenario"
+description: "Range S/R v2 M15 primary scenario with required H4 context"
+instrument: "NIFTY50"
+timeframe: "M15"
+replayWindow:
+  start: "2026-04-11T09:15:00Z"
+  end: "2026-04-11T14:00:00Z"
+strategies:
+  - strategyId: "range-sr-v2"
+    strategyVersion: "1.0.0"
+    parameters:
+      minPatternConfidence: 1.0
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: "market-bars.csv"
+contextMarketData:
+  - timeframe: "H4"
+    path: "market-bars-h4.csv"
+    required: true
+researchArtifactsPath: ""
+policyProfile: "prototype1-default"

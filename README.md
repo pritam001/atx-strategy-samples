@@ -14,6 +14,7 @@ Install a sample for local Core CLI or BFF discovery:
 mkdir -p ~/.atx/plugins/strategies
 cp atx-strategy-samples/ema-crossover-strategy/target/ema-crossover-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 cp atx-strategy-samples/range-support-resistance-strategy/target/range-support-resistance-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
+cp atx-strategy-samples/range-sr-v2-strategy/target/range-sr-v2-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 cp atx-strategy-samples/sma-20-pullback-continuation-strategy/target/sma-20-pullback-continuation-strategy-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 cp atx-strategy-samples/doflamingo-strategy-pack/target/doflamingo-strategy-pack-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
 cp atx-strategy-samples/doflamingo-v2-strategy-packs/target/doflamingo-v2-strategy-packs-0.1.0-SNAPSHOT.jar ~/.atx/plugins/strategies/
@@ -27,6 +28,8 @@ Available samples:
 - `ema-crossover-v1`: emits closed-bar EMA crossover signals.
 - `range-support-resistance-v1`: emits closed-bar support/resistance confirmation signals with suggested entry, stop,
   target, and market order parameters.
+- `range-sr-v2`: H4 structure plus M15 reversal strategy with real support/resistance targets, strict Tier-1 pattern
+  defaults, suggested entry/stop/target/size, and structured entry intent evidence.
 - `sma-20-pullback-continuation-v1`: emits closed-bar SMA20 pullback continuation setup events using SMA200 as
   support/resistance context.
 - `doflamingo-ichimoku-mo-002-beta-v1`: ports the Doflamingo 002 beta Ichimoku momentum setup as a long-only continuation
@@ -62,6 +65,15 @@ ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
   java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
   replay run --config range-support-resistance-strategy/src/test/resources/range-support-resistance-scenario/scenario.yaml \
   --out /tmp/atx-range-support-resistance-run
+```
+
+Run the Range S/R v2 sample scenario:
+
+```bash
+ATX_STRATEGY_PLUGIN_DIR=~/.atx/plugins/strategies \
+  java -jar ../atx-platform-core/atx-core-cli/target/atx-core-cli-0.1.0-SNAPSHOT.jar \
+  replay run --config range-sr-v2-strategy/src/test/resources/range-sr-v2-scenario/scenario.yaml \
+  --out /tmp/atx-range-sr-v2-run
 ```
 
 Run the SMA 20 pullback continuation sample scenario:

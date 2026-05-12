@@ -38,10 +38,12 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
                 StrategyCapability.LONG_ENTRY_INTENT,
                 StrategyCapability.SHORT_ENTRY_INTENT,
                 StrategyCapability.EXIT_INTENT,
+                StrategyCapability.SCALE_OUT_INTENT,
+                StrategyCapability.REVERSAL_INTENT,
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
-        assertThat(descriptor.parameterSchema().parameters()).hasSize(18);
+        assertThat(descriptor.parameterSchema().parameters()).hasSize(24);
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().string("entryMode", "")).isEqualTo("HYBRID");
         assertThat(validation.effectiveParameters().decimal("minConfidence", BigDecimal.ZERO)).isEqualByComparingTo("0.60");
@@ -51,6 +53,12 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
         assertThat(validation.effectiveParameters().bool("allowShorts", false)).isTrue();
         assertThat(validation.effectiveParameters().string("shortCloudPriceMode", "")).isEqualTo("HIGH_BELOW_CLOUD");
         assertThat(validation.effectiveParameters().string("shortEmaCloudMode", "")).isEqualTo("EMA9_BELOW_SPAN_B");
+        assertThat(validation.effectiveParameters().bool("allowReversal", true)).isFalse();
+        assertThat(validation.effectiveParameters().integer("shortStaleBars", 0)).isEqualTo(16);
+        assertThat(validation.effectiveParameters().decimal("shortStaleMinR", BigDecimal.ZERO)).isEqualByComparingTo("0.25");
+        assertThat(validation.effectiveParameters().bool("allowShortScaleOut", false)).isTrue();
+        assertThat(validation.effectiveParameters().decimal("shortScaleOutAtR", BigDecimal.ZERO)).isEqualByComparingTo("1.00");
+        assertThat(validation.effectiveParameters().decimal("shortScaleOutFraction", BigDecimal.ZERO)).isEqualByComparingTo("0.50");
     }
 
     @Test
@@ -186,7 +194,8 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
     void bearishSetupEmitsShortEntryIntent() {
         TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
                 "trendAverageLookback", 50,
-                "minConfidence", "0.50"
+                "minConfidence", "0.50",
+                "enableProtectiveStop", false
         )), null);
         List<BarEvent> bars = DoflamingoStrategyTestSupport.ichimokuBetaShortSetupBars();
 
@@ -206,9 +215,101 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
                 .contains(
                         "ichimoku-v3.short-price-below-cloud",
                         "ichimoku-v3.short-future-red-cloud",
+                        "ichimoku-v3.short-raw-stop-pct",
                         "ichimoku-v3.short-trend-negative",
                         "ichimoku-v3.short-confidence-threshold"
                 );
+        assertThat(intent.reason().evidence()).anySatisfy(value -> assertThat(value).startsWith("rawStopPct="));
+        assertThat(intent.reason().evidence()).anySatisfy(value -> assertThat(value).startsWith("selectedStopPct="));
+    }
+
+    @Test
+    void protectiveShortEntryRejectsStopsWiderThanConfiguredMax() {
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "maxStopPct", "20.0"
+        )), null);
+
+        assertThat(firstIntent(strategy, DoflamingoStrategyTestSupport.ichimokuBetaShortSetupBars())).isNull();
+    }
+
+    @Test
+    void shortLifecycleAddsScaleOutStaleExitAndPostScaleRecovery() {
+        List<BarEvent> shortBars = DoflamingoStrategyTestSupport.ichimokuBetaShortSetupBars();
+        TradeIntentStrategy scaleOutStrategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50"
+        )), null);
+        var scaleOut = scaleOutStrategy.onBarIntent(DoflamingoStrategyTestSupport.context(
+                shortBars,
+                DoflamingoStrategyTestSupport.shortPosition(6, 1.20d, 0)
+        ));
+
+        assertThat(scaleOut.tradeIntents()).hasSize(1);
+        assertThat(scaleOut.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.SCALE_OUT_SHORT);
+        assertThat(scaleOut.tradeIntents().getFirst().sizing().type()).isEqualTo(StrategySizingType.SCALE_FRACTION);
+
+        TradeIntentStrategy staleStrategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "allowShortScaleOut", false,
+                "shortStaleBars", 16,
+                "shortStaleMinR", "0.25"
+        )), null);
+        var staleExit = staleStrategy.onBarIntent(DoflamingoStrategyTestSupport.context(
+                shortBars,
+                DoflamingoStrategyTestSupport.shortPosition(20, 0.10d, 0)
+        ));
+
+        assertThat(staleExit.tradeIntents()).hasSize(1);
+        assertThat(staleExit.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_SHORT);
+        assertThat(staleExit.tradeIntents().getFirst().reason().conditions()).extracting("conditionId")
+                .contains("ichimoku-v3.short-exit-stale-bars", "ichimoku-v3.short-exit-stale-r");
+
+        TradeIntentStrategy postScaleStrategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "allowShortScaleOut", false
+        )), null);
+        var postScale = postScaleStrategy.onBarIntent(DoflamingoStrategyTestSupport.context(
+                DoflamingoStrategyTestSupport.ichimokuBetaSetupBars(),
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.60d, 1)
+        ));
+
+        assertThat(postScale.tradeIntents()).hasSize(1);
+        assertThat(postScale.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_SHORT);
+        assertThat(postScale.tradeIntents().getFirst().reason().conditions()).extracting("conditionId")
+                .contains("ichimoku-v3.short-exit-post-scale-recovery");
+    }
+
+    @Test
+    void reversalIntentsRequireExplicitEnablement() {
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        TradeIntentStrategy disabled = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "allowShortScaleOut", false
+        )), null);
+        TradeIntentStrategy enabled = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "allowShortScaleOut", false,
+                "allowReversal", true
+        )), null);
+
+        var disabledResult = disabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.20d, 0)
+        ));
+        var enabledResult = enabled.onBarIntent(DoflamingoStrategyTestSupport.context(
+                bars,
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.20d, 0)
+        ));
+
+        assertThat(disabledResult.tradeIntents()).extracting("action").doesNotContain(StrategyTradeAction.REVERSE_SHORT_TO_LONG);
+        assertThat(enabledResult.tradeIntents()).hasSize(1);
+        assertThat(enabledResult.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.REVERSE_SHORT_TO_LONG);
     }
 
     @Test

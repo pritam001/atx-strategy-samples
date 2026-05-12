@@ -286,6 +286,113 @@ final class DoflamingoSignalSupport {
         );
     }
 
+    static StrategyTradeIntent shortScaleInIntent(
+            String strategyId,
+            String strategyVersion,
+            StrategyExecutionContext context,
+            BigDecimal confidence,
+            SetupType setupType,
+            BigDecimal scaleInFraction,
+            int maxScaleIns,
+            String reason,
+            List<String> evidence,
+            List<String> tags,
+            List<StrategyTradeIntentConditionEvidence> conditions
+    ) {
+        BarEvent bar = context.currentBar();
+        return intent(
+                strategyId,
+                strategyVersion,
+                context,
+                StrategyTradeAction.SCALE_IN_SHORT,
+                PositionSide.SHORT,
+                LifecycleRole.SCALE_IN,
+                setupType,
+                confidence,
+                TradeIntentExitPolicy.none(),
+                new TradeIntentPreconditions(false, true, PositionSide.SHORT, maxScaleIns),
+                scaleFractionSizing(scaleInFraction),
+                TradeIntentHorizon.unknown(),
+                reason,
+                evidence,
+                tags,
+                "short-scale-in-" + bar.eventId().value().toLowerCase(Locale.ROOT),
+                conditions
+        );
+    }
+
+    static StrategyTradeIntent reverseLongToShortIntent(
+            String strategyId,
+            String strategyVersion,
+            StrategyExecutionContext context,
+            BigDecimal confidence,
+            SetupType setupType,
+            BigDecimal riskFraction,
+            TradeIntentExitPolicy exitPolicy,
+            int maxHoldingBars,
+            String reason,
+            List<String> evidence,
+            List<String> tags,
+            List<StrategyTradeIntentConditionEvidence> conditions
+    ) {
+        BarEvent bar = context.currentBar();
+        return intent(
+                strategyId,
+                strategyVersion,
+                context,
+                StrategyTradeAction.REVERSE_LONG_TO_SHORT,
+                PositionSide.SHORT,
+                LifecycleRole.REVERSAL,
+                setupType,
+                confidence,
+                exitPolicy,
+                new TradeIntentPreconditions(false, true, PositionSide.LONG, null),
+                riskFractionSizing(riskFraction),
+                new TradeIntentHorizon(maxHoldingBars, null, IntendedHorizonLabel.INTRADAY),
+                reason,
+                evidence,
+                tags,
+                "reverse-long-to-short-" + bar.eventId().value().toLowerCase(Locale.ROOT),
+                conditions
+        );
+    }
+
+    static StrategyTradeIntent reverseShortToLongIntent(
+            String strategyId,
+            String strategyVersion,
+            StrategyExecutionContext context,
+            BigDecimal confidence,
+            SetupType setupType,
+            BigDecimal riskFraction,
+            TradeIntentExitPolicy exitPolicy,
+            int maxHoldingBars,
+            String reason,
+            List<String> evidence,
+            List<String> tags,
+            List<StrategyTradeIntentConditionEvidence> conditions
+    ) {
+        BarEvent bar = context.currentBar();
+        return intent(
+                strategyId,
+                strategyVersion,
+                context,
+                StrategyTradeAction.REVERSE_SHORT_TO_LONG,
+                PositionSide.LONG,
+                LifecycleRole.REVERSAL,
+                setupType,
+                confidence,
+                exitPolicy,
+                new TradeIntentPreconditions(false, true, PositionSide.SHORT, null),
+                riskFractionSizing(riskFraction),
+                new TradeIntentHorizon(maxHoldingBars, null, IntendedHorizonLabel.INTRADAY),
+                reason,
+                evidence,
+                tags,
+                "reverse-short-to-long-" + bar.eventId().value().toLowerCase(Locale.ROOT),
+                conditions
+        );
+    }
+
     static TradeIntentExitPolicy percentStop(BigDecimal stopLossPct, String description) {
         if (stopLossPct == null || stopLossPct.signum() <= 0) {
             return TradeIntentExitPolicy.none();

@@ -224,6 +224,7 @@ final class DoflamingoIndicatorMath {
             return Optional.empty();
         }
         return Optional.of(new MultiIndicatorState(
+                ichimoku.get().presentSpanA(),
                 ichimoku.get().presentSpanB(),
                 macd.histogram()[index],
                 macd.histogram()[index - 1],
@@ -514,7 +515,7 @@ final class DoflamingoIndicatorMath {
                             double futureSpanA, double futureSpanB) {
     }
 
-    record MultiIndicatorState(double presentSpanB, double macdHistogram, double previousMacdHistogram,
+    record MultiIndicatorState(double presentSpanA, double presentSpanB, double macdHistogram, double previousMacdHistogram,
                                double secondPreviousMacdHistogram, double macdSignal, double stochK,
                                double previousStochK, double stochD, double previousStochD,
                                double psar, double previousPsar) {
@@ -526,7 +527,10 @@ final class DoflamingoIndicatorMath {
         private static final int STOCH_K_PERIOD = 3;
         private static final int STOCH_D_PERIOD = 3;
 
+        private final RollingMidpoint conversion = new RollingMidpoint(ICHIMOKU_CONVERSION_PERIOD);
+        private final RollingMidpoint base = new RollingMidpoint(ICHIMOKU_BASE_PERIOD);
         private final RollingMidpoint spanB = new RollingMidpoint(ICHIMOKU_SPAN_B_PERIOD);
+        private final ArrayDeque<Double> displacedSpanA = new ArrayDeque<>();
         private final ArrayDeque<Double> displacedSpanB = new ArrayDeque<>();
         private final RollingIndicators.Macd macd;
         private final LaggedStochRsi stochRsi = new LaggedStochRsi(
@@ -549,12 +553,19 @@ final class DoflamingoIndicatorMath {
 
         Optional<MultiIndicatorState> update(BarEvent bar) {
             index++;
+            OptionalDouble currentConversion = conversion.update(bar);
+            OptionalDouble currentBase = base.update(bar);
+            OptionalDouble currentSpanA = currentConversion.isPresent() && currentBase.isPresent()
+                    ? OptionalDouble.of((currentConversion.getAsDouble() + currentBase.getAsDouble()) / 2.0d)
+                    : OptionalDouble.empty();
+            double presentSpanA = displacedSpanA(currentSpanA);
             double presentSpanB = displacedSpanB(spanB.update(bar));
             advanceMacd(bar);
             StochRsiPoint stochPoint = stochRsi.update(index, close(bar));
             Optional<PsarPoint> psarPoint = psar.update(bar);
 
             if (index < 60
+                    || !finite(presentSpanA)
                     || !finite(presentSpanB)
                     || !finite(macdHistogram)
                     || !finite(previousMacdHistogram)
@@ -564,6 +575,7 @@ final class DoflamingoIndicatorMath {
                 return Optional.empty();
             }
             return Optional.of(new MultiIndicatorState(
+                    presentSpanA,
                     presentSpanB,
                     macdHistogram,
                     previousMacdHistogram,
@@ -576,6 +588,14 @@ final class DoflamingoIndicatorMath {
                     psarPoint.get().current(),
                     psarPoint.get().previous()
             ));
+        }
+
+        private double displacedSpanA(OptionalDouble currentSpanA) {
+            displacedSpanA.addLast(currentSpanA.orElse(Double.NaN));
+            if (displacedSpanA.size() <= ICHIMOKU_DISPLACEMENT) {
+                return Double.NaN;
+            }
+            return displacedSpanA.removeFirst();
         }
 
         private double displacedSpanB(OptionalDouble currentSpanB) {
