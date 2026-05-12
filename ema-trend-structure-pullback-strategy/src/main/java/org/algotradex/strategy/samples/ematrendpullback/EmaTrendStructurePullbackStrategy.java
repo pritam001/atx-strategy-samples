@@ -1,6 +1,7 @@
 package org.algotradex.strategy.samples.ematrendpullback;
 
 import org.algotradex.platform.contracts.common.enums.Direction;
+import org.algotradex.platform.contracts.common.enums.PositionSide;
 import org.algotradex.platform.contracts.common.enums.SourceType;
 import org.algotradex.platform.contracts.common.ids.SignalId;
 import org.algotradex.platform.contracts.common.refs.SourceRef;
@@ -8,10 +9,17 @@ import org.algotradex.platform.contracts.common.value.ConfidenceScore;
 import org.algotradex.platform.contracts.common.value.TagSet;
 import org.algotradex.platform.contracts.common.value.TimeHorizon;
 import org.algotradex.platform.contracts.intelligence.SetupType;
+import org.algotradex.platform.contracts.intelligence.StrategyTradeIntent;
+import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentConditionEvidence;
+import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
+import org.algotradex.platform.contracts.intelligence.TradeIntentExitPolicy;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
-import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
+import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -25,9 +33,9 @@ import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
 /**
- * EMA20/50/200 trend-structure continuation sample strategy.
+ * EMA20/50/200 trend-structure continuation lifecycle sample strategy.
  */
-public final class EmaTrendStructurePullbackStrategy implements TradeSignalStrategy {
+public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrategy {
     private static final double IDEAL_DISTANCE_FROM_FAST_EMA_MIN_PCT = 0.10d;
     private static final double TRANSITION_MAX_DISTANCE_FROM_FAST_EMA_PCT = 2.50d;
 
@@ -46,22 +54,50 @@ public final class EmaTrendStructurePullbackStrategy implements TradeSignalStrat
     }
 
     @Override
-    public Optional<TradeSignal> onBar(StrategyExecutionContext context) {
+    public List<StrategyCapability> lifecycleCapabilities() {
+        return List.of(
+                StrategyCapability.LONG_SIGNALS,
+                StrategyCapability.SHORT_SIGNALS,
+                StrategyCapability.TRADE_INTENT,
+                StrategyCapability.LONG_ENTRY_INTENT,
+                StrategyCapability.SHORT_ENTRY_INTENT,
+                StrategyCapability.EXIT_INTENT,
+                StrategyCapability.SCALE_OUT_INTENT,
+                StrategyCapability.SCALE_IN_INTENT,
+                StrategyCapability.RISK_AWARE_SIZING,
+                StrategyCapability.PARAMETERIZED
+        );
+    }
+
+    @Override
+    public StrategyIntentResult onBarIntent(StrategyExecutionContext context) {
         requireNonNull(context, "context");
         List<BarEvent> history = context.instrumentHistory();
         if (history.isEmpty()) {
-            return Optional.empty();
+            return StrategyIntentResult.empty();
         }
         if (history.size() < processedBars) {
             resetRuntime();
         }
-        if (history.size() <= processedBars) {
-            return Optional.empty();
-        }
 
         EmaSeries series = EmaSeries.from(history, params);
-        Optional<SetupCandidate> latestCandidate = Optional.empty();
         int finalIndex = history.size() - 1;
+        if (!series.readyAt(finalIndex, params)) {
+            return StrategyIntentResult.empty();
+        }
+
+        StrategyInstrumentPosition position = context.instrumentPosition();
+        if (position.hasPosition()) {
+            processedBars = history.size();
+            EmaSnapshot snapshot = EmaSnapshot.from(series, finalIndex, params);
+            return lifecycleIntent(context, series, snapshot, position);
+        }
+
+        if (history.size() <= processedBars) {
+            return StrategyIntentResult.empty();
+        }
+
+        Optional<SetupCandidate> latestCandidate = Optional.empty();
         for (int index = processedBars; index <= finalIndex; index++) {
             Optional<SetupCandidate> candidate = processIndex(series, index);
             if (candidate.isPresent() && index == finalIndex) {
@@ -69,7 +105,35 @@ public final class EmaTrendStructurePullbackStrategy implements TradeSignalStrat
             }
             processedBars = index + 1;
         }
-        return latestCandidate.map(candidate -> signal(context, candidate));
+        if (latestCandidate.isEmpty()) {
+            return StrategyIntentResult.empty();
+        }
+
+        SetupCandidate candidate = latestCandidate.get();
+        StopComputation stop = stopComputation(series, candidate);
+        BigDecimal adjustedConfidence = entryConfidence(candidate.strengthScore(), stop);
+        if (adjustedConfidence.compareTo(params.minConfidence()) < 0) {
+            return StrategyIntentResult.empty();
+        }
+        TradeSignal signal = signal(context, candidate, adjustedConfidence);
+        StrategyTradeIntent intent = EmaTrendStructureIntentSupport.entryIntent(
+                strategyId(),
+                EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                context,
+                side(candidate.direction()),
+                adjustedConfidence,
+                candidate.setupType(),
+                params.riskFraction(),
+                stop.exitPolicy(),
+                params.maxHoldingBars(),
+                entryReason(candidate, stop, adjustedConfidence)
+        );
+        return new StrategyIntentResult(List.of(signal), List.of(intent), List.of());
+    }
+
+    @Override
+    public Optional<TradeSignal> onBar(StrategyExecutionContext context) {
+        return onBarIntent(context).tradeSignals().stream().findFirst();
     }
 
     static double[] emaSeries(List<BarEvent> history, int period) {

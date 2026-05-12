@@ -22,6 +22,29 @@ record EmaTrendStructurePullbackParameters(
         int transitionBreakoutLookbackBars,
         BigDecimal minConfidence,
         boolean allowShorts,
-        int cooldownBars
+        int cooldownBars,
+        BigDecimal riskFraction,
+        int maxHoldingBars,
+        int staleBars,
+        BigDecimal staleMinR,
+        StopMode stopMode,
+        int atrPeriod,
+        BigDecimal atrStopMultiple,
+        BigDecimal minStopPct,
+        BigDecimal maxStopPct,
+        boolean enableScaleOut,
+        BigDecimal scaleOutAtR,
+        BigDecimal scaleOutFraction,
+        boolean trailAfterScaleOut,
+        boolean enableScaleIn,
+        BigDecimal scaleInAtR,
+        int maxScaleIns,
+        BigDecimal scaleInFraction,
+        boolean breakEvenAfterScaleOut,
+        boolean exitOnCompression,
+        boolean exitOnChop
 ) {
+    enum StopMode {
+        EMA50_OR_ATR
+    }
 }
