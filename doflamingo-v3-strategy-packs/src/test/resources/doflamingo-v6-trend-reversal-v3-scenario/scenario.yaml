@@ -1,0 +1,41 @@
+id: doflamingo-v6-trend-reversal-v3-sample
+description: Doflamingo multi-indicator V6 trend reversal v3 adaptive lifecycle scenario for trusted plugin verification
+instrument: NIFTY50
+timeframe: M15
+replayWindow:
+  start: 2026-04-11T09:15:00Z
+  end: 2026-04-12T06:30:00Z
+strategies:
+  - strategyId: doflamingo-multi-indicator-v6-trend-reversal-v3
+    strategyVersion: 3.0.0
+    parameters:
+      minConfidence: 0.60
+      macdFastPeriod: 3
+      macdSlowPeriod: 7
+      macdSignalPeriod: 8
+      stochOverbought: 80
+      stochOversold: 20
+      trendFilterMode: SOFT
+      adaptiveMomentumMode: ADAPTIVE_CONFIRMATION
+      stopMode: ATR_OR_PERCENT_MAX
+      stopLossPct: 2.0
+      minStopPct: 1.0
+      maxStopPct: 2.5
+      atrPeriod: 14
+      atrStopMultiple: 1.5
+      maxHoldingBars: 64
+      staleBars: 16
+      staleMinR: 0.25
+      enableScaleOut: true
+      scaleOutAtR: 1.0
+      scaleOutFraction: 0.50
+      trailAfterScaleOut: true
+      riskFraction: 0.01
+      skipMarketRegimes: []
+      allowShorts: true
+      shortCloudMode: CLOSE_BELOW_CLOUD
+researchMode: false
+includeNoTradeBaseline: false
+marketDataPath: market-bars.csv
+researchArtifactsPath: ""
+policyProfile: prototype1-default

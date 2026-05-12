@@ -1,4 +1,4 @@
-package org.algotradex.strategy.samples.doflamingov2;
+package org.algotradex.strategy.samples.doflamingov3;
 
 import org.algotradex.platform.contracts.common.enums.StrategyEntryType;
 import org.algotradex.platform.contracts.common.enums.StrategyExitRuleType;
@@ -33,14 +33,16 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(descriptor.providerId()).isEqualTo(DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.PROVIDER_ID);
         assertThat(descriptor.capabilities()).contains(
                 StrategyCapability.LONG_SIGNALS,
+                StrategyCapability.SHORT_SIGNALS,
                 StrategyCapability.TRADE_INTENT,
                 StrategyCapability.LONG_ENTRY_INTENT,
+                StrategyCapability.SHORT_ENTRY_INTENT,
                 StrategyCapability.EXIT_INTENT,
                 StrategyCapability.SCALE_OUT_INTENT,
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
-        assertThat(descriptor.parameterSchema().parameters()).hasSize(23);
+        assertThat(descriptor.parameterSchema().parameters()).hasSize(25);
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().decimal("minConfidence", BigDecimal.ZERO)).isEqualByComparingTo("0.60");
         assertThat(validation.effectiveParameters().integer("macdFastPeriod", 0)).isEqualTo(16);
@@ -51,6 +53,8 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(validation.effectiveParameters().decimal("scaleOutFraction", BigDecimal.ZERO)).isEqualByComparingTo("0.50");
         assertThat(validation.effectiveParameters().bool("trailAfterScaleOut", false)).isTrue();
         assertThat(validation.effectiveParameters().stringList("skipMarketRegimes", List.of("fallback"))).isEmpty();
+        assertThat(validation.effectiveParameters().bool("allowShorts", false)).isTrue();
+        assertThat(validation.effectiveParameters().string("shortCloudMode", "")).isEqualTo("CLOSE_BELOW_CLOUD");
     }
 
     @Test
@@ -130,15 +134,15 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(intent.sizing().riskFraction()).isEqualByComparingTo("0.0100");
         assertThat(intent.horizon().maxHoldingBars()).isEqualTo(64);
         assertThat(intent.exit().stop().type()).isEqualTo(StrategyExitRuleType.PERCENT);
-        assertThat(intent.reason().tags()).contains("doflamingo", "v2", "multi-v6", "entry", "confidence");
+        assertThat(intent.reason().tags()).contains("doflamingo", "v3", "multi-v6", "entry", "confidence");
         assertThat(intent.reason().evidence()).contains("marketRegime=INSUFFICIENT_DATA", "skipMarketRegimes=[]");
         assertThat(intent.reason().conditions()).extracting("conditionId")
                 .contains(
-                        "multi-v6-v2.psar-direction-up",
-                        "multi-v6-v2.adaptive-momentum-confirmed",
-                        "multi-v6-v2.trend-filter",
-                        "multi-v6-v2.market-regime-allowed",
-                        "multi-v6-v2.confidence-threshold"
+                        "multi-v6-v3.psar-direction-up",
+                        "multi-v6-v3.adaptive-momentum-confirmed",
+                        "multi-v6-v3.trend-filter",
+                        "multi-v6-v3.market-regime-allowed",
+                        "multi-v6-v3.confidence-threshold"
                 );
         assertThat(intent.reason().evidence()).contains("adaptiveMomentumMode=ADAPTIVE_CONFIRMATION");
     }
@@ -182,7 +186,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(adaptiveResult).isNotNull();
         var adaptiveIntent = adaptiveResult.tradeIntents().getFirst();
         assertThat(adaptiveIntent.reason().conditions())
-                .filteredOn(condition -> condition.conditionId().equals("multi-v6-v2.adaptive-momentum-confirmed"))
+                .filteredOn(condition -> condition.conditionId().equals("multi-v6-v3.adaptive-momentum-confirmed"))
                 .singleElement()
                 .satisfies(condition -> assertThat(condition.passed()).isTrue());
     }
@@ -211,6 +215,89 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
 
         assertThat(firstIntent(blocked, bars, PrimaryMarketRegime.RANGING_LOW_VOLATILITY)).isNull();
         assertThat(firstIntent(allowed, bars, PrimaryMarketRegime.STRONG_TREND_MEDIUM_VOLATILITY)).isNotNull();
+    }
+
+    @Test
+    void bearishSetupEmitsShortEntryIntent() {
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "trendFilterMode", "NONE",
+                "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION"
+        )), null);
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6ShortSetupBars();
+
+        var result = firstIntent(strategy, bars);
+
+        assertThat(result).isNotNull();
+        assertThat(result.tradeSignals()).hasSize(1);
+        assertThat(result.tradeIntents()).hasSize(1);
+        var intent = result.tradeIntents().getFirst();
+        assertThat(intent.action()).isEqualTo(StrategyTradeAction.ENTER_SHORT);
+        assertThat(intent.entry().type()).isEqualTo(StrategyEntryType.MARKET_NEXT_OPEN);
+        assertThat(intent.sizing().type()).isEqualTo(StrategySizingType.RISK_FRACTION);
+        assertThat(intent.reason().tags()).contains("doflamingo", "v3", "multi-v6", "entry", "short", "confidence");
+        assertThat(intent.reason().evidence()).contains("side=SHORT", "setup=multi-v6-short-reversal");
+        assertThat(intent.reason().conditions()).extracting("conditionId")
+                .contains(
+                        "multi-v6-v3.short.psar-down",
+                        "multi-v6-v3.short.cloud-confirmation",
+                        "multi-v6-v3.short.trend-filter",
+                        "multi-v6-v3.short.confidence-threshold"
+                );
+    }
+
+    @Test
+    void allowShortsFalseSuppressesBearishEntry() {
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "trendFilterMode", "NONE",
+                "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION",
+                "allowShorts", false
+        )), null);
+
+        assertThat(firstIntent(strategy, DoflamingoStrategyTestSupport.multiIndicatorV6ShortSetupBars())).isNull();
+    }
+
+    @Test
+    void shortPositionUsesShortScaleOutAndExitActions() {
+        TradeIntentStrategy scaleOutStrategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "scaleOutAtR", "1.0",
+                "scaleOutFraction", "0.50"
+        )), null);
+        var scaleOut = scaleOutStrategy.onBarIntent(DoflamingoStrategyTestSupport.context(
+                DoflamingoStrategyTestSupport.multiIndicatorV6ShortSetupBars(),
+                DoflamingoStrategyTestSupport.shortPosition(6, 1.2d, 0)
+        ));
+
+        assertThat(scaleOut.tradeIntents()).hasSize(1);
+        assertThat(scaleOut.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.SCALE_OUT_SHORT);
+        assertThat(scaleOut.tradeIntents().getFirst().sizing().type()).isEqualTo(StrategySizingType.SCALE_FRACTION);
+
+        TradeIntentStrategy exitStrategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "enableScaleOut", false
+        )), null);
+        var exit = exitStrategy.onBarIntent(DoflamingoStrategyTestSupport.context(
+                DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars(),
+                DoflamingoStrategyTestSupport.shortPosition(6, 0.2d, 0)
+        ));
+
+        assertThat(exit.tradeIntents()).hasSize(1);
+        assertThat(exit.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_SHORT);
+        assertThat(exit.tradeIntents().getFirst().sizing().type()).isEqualTo(StrategySizingType.CLOSE_FRACTION);
     }
 
     @Test
@@ -292,7 +379,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(intent.sizing().requestedFraction()).isEqualByComparingTo("1.0000");
         assertThat(intent.confidence().value()).isNotEqualByComparingTo("0.7400");
         assertThat(intent.reason().conditions()).extracting("conditionId")
-                .contains("multi-v6-v2.exit-stale-bars", "multi-v6-v2.exit-stale-r");
+                .contains("multi-v6-v3.exit-stale-bars", "multi-v6-v3.exit-stale-r");
     }
 
     @Test
@@ -363,7 +450,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
 
         assertThat(enabledResult.tradeIntents()).extracting("action").contains(StrategyTradeAction.EXIT_LONG);
         assertThat(enabledResult.tradeIntents().getFirst().reason().conditions())
-                .filteredOn(condition -> condition.conditionId().equals("multi-v6-v2.exit-post-scale-weakness"))
+                .filteredOn(condition -> condition.conditionId().equals("multi-v6-v3.exit-post-scale-weakness"))
                 .singleElement()
                 .satisfies(condition -> assertThat(condition.passed()).isTrue());
         assertThat(disabledResult.tradeIntents()).isEmpty();

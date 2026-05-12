@@ -1,4 +1,4 @@
-package org.algotradex.strategy.samples.doflamingov2;
+package org.algotradex.strategy.samples.doflamingov3;
 
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
@@ -24,9 +24,9 @@ import java.util.Map;
  * ServiceLoader provider for the Doflamingo multi-indicator v6 trend reversal port.
  */
 public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider implements StrategyProvider {
-    public static final String STRATEGY_ID = "doflamingo-multi-indicator-v6-trend-reversal-v2";
-    public static final String STRATEGY_VERSION = "2.0.0";
-    public static final String PROVIDER_ID = "doflamingo-v2-strategy-packs";
+    public static final String STRATEGY_ID = "doflamingo-multi-indicator-v6-trend-reversal-v3";
+    public static final String STRATEGY_VERSION = "3.0.0";
+    public static final String PROVIDER_ID = "doflamingo-v3-strategy-packs";
     private static final int DEFAULT_MACD_FAST_PERIOD = 16;
     private static final int DEFAULT_MACD_SLOW_PERIOD = 36;
     private static final int DEFAULT_MACD_SIGNAL_PERIOD = 9;
@@ -54,10 +54,12 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
     static final String TRAIL_AFTER_SCALE_OUT = "trailAfterScaleOut";
     static final String RISK_FRACTION = "riskFraction";
     static final String SKIP_MARKET_REGIMES = DoflamingoMarketRegimeFilter.SKIP_MARKET_REGIMES;
+    static final String ALLOW_SHORTS = "allowShorts";
+    static final String SHORT_CLOUD_MODE = "shortCloudMode";
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
             new StrategyParameterDefinition(MIN_CONFIDENCE, StrategyParameterType.DECIMAL, "Minimum Confidence",
-                    "Minimum dynamic confidence required before emitting Doflamingo Multi V6 v2 intents.",
+                    "Minimum dynamic confidence required before emitting Doflamingo Multi V6 v3 intents.",
                     true, BigDecimal.valueOf(0.60), BigDecimal.ZERO, BigDecimal.ONE, List.of()),
             new StrategyParameterDefinition(MACD_FAST_PERIOD, StrategyParameterType.INTEGER, "MACD Fast Period",
                     "Fast EMA period used by the Doflamingo v6 MACD pattern.",
@@ -81,7 +83,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     "Whether improving MACD histogram or Stoch RSI K may explicitly stand in for the original reversal pattern.",
                     true, "STRICT_REVERSAL", null, null, List.of("STRICT_REVERSAL", "ADAPTIVE_CONFIRMATION")),
             new StrategyParameterDefinition(STOP_MODE, StrategyParameterType.ENUM, "Stop Mode",
-                    "Runtime stop model emitted on v2 entry intents.",
+                    "Runtime stop model emitted on v3 entry intents.",
                     true, "ATR_OR_PERCENT_MAX", null, null, List.of("PERCENT", "ATR", "CLOUD", "ATR_OR_PERCENT_MAX")),
             new StrategyParameterDefinition(STOP_LOSS_PCT, StrategyParameterType.DECIMAL, "Stop Loss Percent",
                     "Percent stop used by fixed or bounded adaptive stop policies.",
@@ -99,7 +101,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     "ATR multiple used by adaptive stop scoring.",
                     true, BigDecimal.valueOf(1.5), BigDecimal.valueOf(0.1), BigDecimal.valueOf(10), List.of()),
             new StrategyParameterDefinition(MAX_HOLDING_BARS, StrategyParameterType.INTEGER, "Max Holding Bars",
-                    "Maximum bars the runtime may hold an accepted v2 Multi V6 position.",
+                    "Maximum bars the runtime may hold an accepted v3 Multi V6 position.",
                     true, 64, BigDecimal.ONE, BigDecimal.valueOf(500), List.of()),
             new StrategyParameterDefinition(STALE_BARS, StrategyParameterType.INTEGER, "Stale Bars",
                     "Bars held before a weak trade is eligible for stale exit.",
@@ -108,7 +110,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     "Maximum R multiple below which an old trade is considered stale.",
                     true, BigDecimal.valueOf(0.25), BigDecimal.valueOf(-5), BigDecimal.valueOf(10), List.of()),
             new StrategyParameterDefinition(ENABLE_SCALE_OUT, StrategyParameterType.BOOLEAN, "Enable Scale Out",
-                    "Whether v2 emits one scale-out intent after the configured R multiple.",
+                    "Whether v3 emits one scale-out intent after the configured R multiple.",
                     true, true, null, null, List.of()),
             new StrategyParameterDefinition(SCALE_OUT_AT_R, StrategyParameterType.DECIMAL, "Scale Out At R",
                     "Current R multiple required for scale-out.",
@@ -120,24 +122,32 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     "Whether post-scale trailing weakness may close the remaining position.",
                     true, true, null, null, List.of()),
             new StrategyParameterDefinition(RISK_FRACTION, StrategyParameterType.DECIMAL, "Risk Fraction",
-                    "Portfolio risk fraction requested by v2 entry intents.",
+                    "Portfolio risk fraction requested by v3 entry intents.",
                     true, BigDecimal.valueOf(0.01), BigDecimal.ZERO, BigDecimal.valueOf(0.02), List.of()),
             new StrategyParameterDefinition(SKIP_MARKET_REGIMES, StrategyParameterType.MULTI_ENUM, "Skip Market Regimes",
-                    "Market-context regimes where new Doflamingo Multi V6 v2 entries are skipped.",
-                    false, List.of(), null, null, DoflamingoMarketRegimeFilter.ALLOWED_REGIME_NAMES)
+                    "Market-context regimes where new Doflamingo Multi V6 v3 entries are skipped.",
+                    false, List.of(), null, null, DoflamingoMarketRegimeFilter.ALLOWED_REGIME_NAMES),
+            new StrategyParameterDefinition(ALLOW_SHORTS, StrategyParameterType.BOOLEAN, "Allow Shorts",
+                    "Whether V3 may emit new short entry intents when bearish lifecycle conditions pass.",
+                    true, true, null, null, List.of()),
+            new StrategyParameterDefinition(SHORT_CLOUD_MODE, StrategyParameterType.ENUM, "Short Cloud Mode",
+                    "Bearish cloud confirmation required for V3 short entries.",
+                    true, "CLOSE_BELOW_CLOUD", null, null, List.of("CLOSE_BELOW_CLOUD", "HIGH_BELOW_CLOUD"))
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
             PROVIDER_ID,
-            "Doflamingo Multi Indicator V6 Trend Reversal V2",
-            "ATX-adaptive long-only PSAR, MACD/Stoch RSI, and Ichimoku lifecycle reversal strategy.",
+            "Doflamingo Multi Indicator V6 Trend Reversal V3",
+            "Short-capable multi-indicator trend reversal lifecycle strategy with structured trade-intent evidence.",
             List.of("M15", "H1"),
             List.of("EQUITY", "INDEX"),
             List.of(
                     StrategyCapability.LONG_SIGNALS,
+                    StrategyCapability.SHORT_SIGNALS,
                     StrategyCapability.TRADE_INTENT,
                     StrategyCapability.LONG_ENTRY_INTENT,
+                    StrategyCapability.SHORT_ENTRY_INTENT,
                     StrategyCapability.EXIT_INTENT,
                     StrategyCapability.SCALE_OUT_INTENT,
                     StrategyCapability.RISK_AWARE_SIZING,
@@ -241,7 +251,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                 effective.decimal(SCALE_OUT_FRACTION, BigDecimal.valueOf(0.50)),
                 effective.bool(TRAIL_AFTER_SCALE_OUT, true),
                 effective.decimal(RISK_FRACTION, BigDecimal.valueOf(0.01)),
-                effective.stringList(SKIP_MARKET_REGIMES, List.of())
+                effective.stringList(SKIP_MARKET_REGIMES, List.of()),
+                effective.bool(ALLOW_SHORTS, true),
+                effective.string(SHORT_CLOUD_MODE, "CLOSE_BELOW_CLOUD")
         );
     }
 }
