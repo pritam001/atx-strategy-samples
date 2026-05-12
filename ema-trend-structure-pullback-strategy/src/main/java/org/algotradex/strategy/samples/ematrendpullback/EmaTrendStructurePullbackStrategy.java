@@ -228,8 +228,9 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         boolean isLong = position.side() == PositionSide.LONG;
         boolean closeBeyondMedium = isLong ? snapshot.close() < snapshot.ema50() : snapshot.close() > snapshot.ema50();
         boolean mixedStack = snapshot.emaStack() == EmaStack.MIXED_STACK;
+        boolean mixedStackLosing = mixedStack && currentR.signum() <= 0;
         boolean oppositeStack = isLong ? snapshot.emaStack() == EmaStack.BEARISH_STACK : snapshot.emaStack() == EmaStack.BULLISH_STACK;
-        boolean structureBreak = closeBeyondMedium || mixedStack || oppositeStack;
+        boolean structureBreak = closeBeyondMedium || mixedStackLosing || oppositeStack;
         boolean compression = params.exitOnCompression()
                 && currentR.signum() <= 0
                 && snapshot.compressionState() == CompressionState.COMPRESSED;
@@ -246,13 +247,17 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         return new ExitAssessment(
                 exit,
                 structureBreak,
+                closeBeyondMedium,
+                mixedStack,
+                mixedStackLosing,
+                oppositeStack,
                 compression,
                 chop,
                 postScaleWeakness,
                 breakEvenFailure,
                 false,
                 false,
-                exitConfidence(closeBeyondMedium, mixedStack || oppositeStack, compression, chop, postScaleWeakness || breakEvenFailure, false, false)
+                exitConfidence(closeBeyondMedium, mixedStackLosing || oppositeStack, compression, chop, postScaleWeakness || breakEvenFailure, false, false)
         );
     }
 
@@ -261,6 +266,10 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         boolean maxHolding = position.barsHeld() >= params.maxHoldingBars();
         return new ExitAssessment(
                 stale || maxHolding,
+                false,
+                false,
+                false,
+                false,
                 false,
                 false,
                 false,
@@ -837,6 +846,10 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                 summary,
                 lifecycleEvidence(snapshot, stop, position, currentR, List.of(
                         "structureBreak=" + assessment.structureBreak(),
+                        "closeBeyondMedium=" + assessment.closeBeyondMedium(),
+                        "mixedStack=" + assessment.mixedStack(),
+                        "mixedStackLosing=" + assessment.mixedStackLosing(),
+                        "oppositeStack=" + assessment.oppositeStack(),
                         "compressionExit=" + assessment.compression(),
                         "chopExit=" + assessment.chop(),
                         "postScaleWeakness=" + assessment.postScaleWeakness(),
@@ -1260,6 +1273,10 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
     private record ExitAssessment(
             boolean exit,
             boolean structureBreak,
+            boolean closeBeyondMedium,
+            boolean mixedStack,
+            boolean mixedStackLosing,
+            boolean oppositeStack,
             boolean compression,
             boolean chop,
             boolean postScaleWeakness,

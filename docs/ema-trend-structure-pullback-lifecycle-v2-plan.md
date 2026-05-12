@@ -1,20 +1,20 @@
 # EMA Trend Structure Pullback Lifecycle V2 Plan
 
-Status: implementation plan
+Status: implemented
 
 Applies to: `ema-trend-structure-pullback-strategy`
 
-Current strategy ID:
+Previous strategy ID:
 
 - `ema-trend-structure-pullback-v1`
 
-Replacement strategy ID:
+Current strategy ID:
 
 - `ema-trend-structure-pullback-v2`
 
 ## Context
 
-`ema-trend-structure-pullback-v1` is a signal-only EMA20/50/200 continuation strategy. It computes closed-bar EMA structure, arms pullbacks, scores setup candidates, and emits one `TradeSignal` when a pullback continuation or bullish transition breakout confirms.
+Before v2, `ema-trend-structure-pullback-v1` was a signal-only EMA20/50/200 continuation strategy. It computed closed-bar EMA structure, armed pullbacks, scored setup candidates, and emitted one `TradeSignal` when a pullback continuation or bullish transition breakout confirmed.
 
 That is enough for standardized signal evaluation, but it does not let ATX evaluate the strategy lifecycle. The strategy does not emit entry, exit, scale-out, scale-in, max-holding, stale-trade, or position-management intents. `StrategyPlanDQS` therefore cannot judge exit quality, scale quality, duration discipline, or risk control from the strategy's own plan.
 
@@ -27,7 +27,7 @@ The platform contract already supports the lifecycle surface needed for v2:
 
 ## Decision
 
-Replace the current signal-only v1 implementation with lifecycle v2 logic in the same module. Do not preserve backward compatibility for v1.
+The strategy now replaces the signal-only v1 implementation with lifecycle v2 logic in the same module. Do not preserve backward compatibility for v1.
 
 Use:
 
@@ -92,6 +92,9 @@ Keep existing v1 parameters and defaults:
 - `minConfidence = 0.70`
 - `allowShorts = false`
 - `cooldownBars = 10`
+
+Descriptor validation intentionally accepts compact EMA periods for the
+self-contained replay/sample fixtures. Production defaults remain EMA20/50/200.
 
 Add lifecycle parameters:
 
@@ -231,7 +234,7 @@ Structure-break exit:
 
 - Long exits when any condition is true:
   - close below EMA50
-  - EMA stack becomes `MIXED_STACK`
+  - EMA stack becomes `MIXED_STACK` while `currentR <= 0`
   - EMA stack becomes `BEARISH_STACK`
   - compression appears and `currentR <= 0`
   - recent EMA cross count reaches threshold and `currentR <= 0`
@@ -337,7 +340,9 @@ Entry confidence:
 - Add v2 modifiers before clamping:
   - `+0.05` when stop distance is inside the ideal range.
   - `-0.10` when stop distance is clamped at `maxStopPct`.
-  - `-0.10` when platform reports existing instrument exposure; in normal flow this should suppress entry before scoring.
+- Suppress entries before confidence scoring when the platform reports existing
+  instrument exposure. This keeps entry and active-position lifecycle flows
+  separate instead of applying a post-hoc confidence haircut.
 
 Scale-out confidence:
 

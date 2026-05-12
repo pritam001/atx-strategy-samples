@@ -221,6 +221,22 @@ class EmaTrendStructurePullbackStrategyProviderTest {
     }
 
     @Test
+    void entryConfidenceChangesWithStopEvidence() {
+        var clamped = firstIntent(compactStrategy(Map.of("maxStopPct", "3.00")), bullishPullbackBars())
+                .tradeIntents()
+                .getFirst();
+        var unclamped = firstIntent(compactStrategy(Map.of("maxStopPct", "5.00")), bullishPullbackBars())
+                .tradeIntents()
+                .getFirst();
+
+        assertThat(clamped.confidence().value()).isLessThan(unclamped.confidence().value());
+        assertThat(clamped.reason().evidence()).contains("stopPct=3.0000");
+        assertThat(unclamped.reason().evidence())
+                .anyMatch(value -> value.startsWith("stopPct=3.") && !value.equals("stopPct=3.0000"));
+        assertThat(unclamped.reason().evidence()).contains("stopMode=EMA50_OR_ATR");
+    }
+
+    @Test
     void emitsBullishTransitionBreakoutEntryIntent() {
         TradeIntentStrategy strategy = compactStrategy(Map.of(
                 "flatSlopeThresholdPct", "0.01",
@@ -328,8 +344,7 @@ class EmaTrendStructurePullbackStrategyProviderTest {
                 .contains("ema-v2.exit-compression", "ema-v2.exit-chop");
 
         TradeIntentStrategy postScale = compactStrategy(Map.of("enableScaleOut", false, "trailAfterScaleOut", true));
-        List<BarEvent> weak = new ArrayList<>(bullishPullbackBars());
-        weak.add(bar(weak.size(), 112.30d, 112.40d, 109.10d, 109.40d));
+        List<BarEvent> weak = postScaleTrailOnlyBars();
         var postScaleExit = postScale.onBarIntent(context(weak, position(PositionSide.LONG, 7, 0.20d, 0, 1, 2.0d, 0.5d)));
         assertThat(postScaleExit.tradeIntents().getFirst().reason().conditions())
                 .filteredOn(condition -> condition.conditionId().equals("ema-v2.exit-post-scale-trail"))
@@ -337,7 +352,8 @@ class EmaTrendStructurePullbackStrategyProviderTest {
                 .satisfies(condition -> assertThat(condition.passed()).isTrue());
         assertThat(postScaleExit.tradeIntents().getFirst().reason().summary()).contains("post-scale trailing weakness");
         assertThat(postScaleExit.tradeIntents().getFirst().reason().evidence())
-                .contains("postScaleWeakness=true", "breakEvenFailure=false");
+                .contains("emaStack=MIXED_STACK", "structureBreak=false", "mixedStack=true", "mixedStackLosing=false",
+                        "postScaleWeakness=true", "breakEvenFailure=false");
 
         TradeIntentStrategy breakEven = compactStrategy(Map.of("enableScaleOut", false, "breakEvenAfterScaleOut", true));
         var breakEvenExit = breakEven.onBarIntent(context(bullishPullbackBars(), position(PositionSide.LONG, 7, -0.01d, 0, 1, 2.0d, 0.5d)));
@@ -379,15 +395,13 @@ class EmaTrendStructurePullbackStrategyProviderTest {
                 .onBarIntent(context(bullishPullbackWithCrossBars(), position(PositionSide.LONG, 5, -0.10d, 0, 0, 0.2d, 0.4d)));
         assertThat(chopSuppressed.tradeIntents()).isEmpty();
 
-        List<BarEvent> weak = new ArrayList<>(bullishPullbackBars());
-        weak.add(bar(weak.size(), 112.30d, 112.40d, 109.10d, 109.40d));
+        List<BarEvent> weak = postScaleTrailOnlyBars();
         var trailSuppressed = compactStrategy(Map.of(
                         "enableScaleOut", false,
                         "trailAfterScaleOut", false
                 ))
                 .onBarIntent(context(weak, position(PositionSide.LONG, 7, 0.20d, 0, 1, 2.0d, 0.5d)));
-        assertThat(trailSuppressed.tradeIntents().getFirst().reason().evidence())
-                .contains("postScaleWeakness=false", "postScaleTrail=false", "structureBreak=true");
+        assertThat(trailSuppressed.tradeIntents()).isEmpty();
 
         TradeIntentStrategy breakEvenOff = compactStrategy(Map.of(
                 "enableScaleOut", false,
@@ -399,6 +413,23 @@ class EmaTrendStructurePullbackStrategyProviderTest {
 
     @Test
     void lifecycleCoversMixedOppositeAndShortSideExitsAndScaleOuts() {
+        var mixedWhileLosing = compactStrategy(Map.of(
+                        "enableScaleOut", false,
+                        "exitOnCompression", false,
+                        "exitOnChop", false
+                ))
+                .onBarIntent(context(mixedStackBars(), position(PositionSide.LONG, 5, -0.20d, 0, 0, 0.2d, 1.2d)));
+        assertThat(mixedWhileLosing.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_LONG);
+        assertThat(mixedWhileLosing.tradeIntents().getFirst().reason().evidence())
+                .contains(
+                        "emaStack=MIXED_STACK",
+                        "structureBreak=true",
+                        "closeBeyondMedium=false",
+                        "mixedStack=true",
+                        "mixedStackLosing=true",
+                        "oppositeStack=false"
+                );
+
         var longOnOppositeStack = compactStrategy(Map.of("enableScaleOut", false))
                 .onBarIntent(context(bearishPullbackBars(), position(PositionSide.LONG, 5, -0.30d, 0, 0, 0.2d, 1.2d)));
         assertThat(longOnOppositeStack.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_LONG);
@@ -608,6 +639,20 @@ class EmaTrendStructurePullbackStrategyProviderTest {
     private static List<BarEvent> bullishPullbackWithCrossBars() {
         List<BarEvent> bars = bullishPullbackBars();
         bars.set(13, bar(13, 111.00d, 111.40d, 109.90d, 110.20d));
+        return bars;
+    }
+
+    private static List<BarEvent> postScaleTrailOnlyBars() {
+        List<BarEvent> bars = new ArrayList<>(bullishPullbackBars());
+        bars.add(bar(bars.size(), 111.70d, 111.90d, 111.20d, 111.40d));
+        bars.add(bar(bars.size(), 111.80d, 112.00d, 111.30d, 111.60d));
+        return bars;
+    }
+
+    private static List<BarEvent> mixedStackBars() {
+        List<BarEvent> bars = new ArrayList<>(bullishPullbackBars());
+        bars.add(bar(bars.size(), 112.60d, 112.80d, 112.20d, 112.40d));
+        bars.add(bar(bars.size(), 112.00d, 112.20d, 111.60d, 111.80d));
         return bars;
     }
 
