@@ -21,6 +21,7 @@ strategies:
       cloudStopBufferPct: 0.25
       structureExitConfirmBars: 2
       cooldownBars: 3
+      skipMarketRegimes: []
 researchMode: false
 includeNoTradeBaseline: false
 marketDataPath: market-bars.csv

@@ -50,6 +50,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
     static final String SCALE_OUT_FRACTION = "scaleOutFraction";
     static final String TRAIL_AFTER_SCALE_OUT = "trailAfterScaleOut";
     static final String RISK_FRACTION = "riskFraction";
+    static final String SKIP_MARKET_REGIMES = DoflamingoMarketRegimeFilter.SKIP_MARKET_REGIMES;
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
             new StrategyParameterDefinition(MIN_CONFIDENCE, StrategyParameterType.DECIMAL, "Minimum Confidence",
@@ -117,7 +118,10 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     true, true, null, null, List.of()),
             new StrategyParameterDefinition(RISK_FRACTION, StrategyParameterType.DECIMAL, "Risk Fraction",
                     "Portfolio risk fraction requested by v2 entry intents.",
-                    true, BigDecimal.valueOf(0.01), BigDecimal.ZERO, BigDecimal.valueOf(0.02), List.of())
+                    true, BigDecimal.valueOf(0.01), BigDecimal.ZERO, BigDecimal.valueOf(0.02), List.of()),
+            new StrategyParameterDefinition(SKIP_MARKET_REGIMES, StrategyParameterType.MULTI_ENUM, "Skip Market Regimes",
+                    "Market-context regimes where new Doflamingo Multi V6 v2 entries are skipped.",
+                    false, List.of(), null, null, DoflamingoMarketRegimeFilter.ALLOWED_REGIME_NAMES)
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -228,7 +232,8 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                 effective.decimal(SCALE_OUT_AT_R, BigDecimal.valueOf(1.0)),
                 effective.decimal(SCALE_OUT_FRACTION, BigDecimal.valueOf(0.50)),
                 effective.bool(TRAIL_AFTER_SCALE_OUT, true),
-                effective.decimal(RISK_FRACTION, BigDecimal.valueOf(0.01))
+                effective.decimal(RISK_FRACTION, BigDecimal.valueOf(0.01)),
+                effective.stringList(SKIP_MARKET_REGIMES, List.of())
         );
     }
 }

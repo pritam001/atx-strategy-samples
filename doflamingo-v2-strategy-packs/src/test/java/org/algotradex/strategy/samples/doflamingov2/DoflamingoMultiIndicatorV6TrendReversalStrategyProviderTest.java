@@ -6,6 +6,7 @@ import org.algotradex.platform.contracts.common.enums.StrategySizingType;
 import org.algotradex.platform.contracts.common.enums.StrategyTradeAction;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
+import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
@@ -39,7 +40,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
-        assertThat(descriptor.parameterSchema().parameters()).hasSize(22);
+        assertThat(descriptor.parameterSchema().parameters()).hasSize(23);
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().decimal("minConfidence", BigDecimal.ZERO)).isEqualByComparingTo("0.60");
         assertThat(validation.effectiveParameters().string("trendFilterMode", "")).isEqualTo("SOFT");
@@ -47,6 +48,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(validation.effectiveParameters().string("stopMode", "")).isEqualTo("ATR_OR_PERCENT_MAX");
         assertThat(validation.effectiveParameters().decimal("scaleOutFraction", BigDecimal.ZERO)).isEqualByComparingTo("0.50");
         assertThat(validation.effectiveParameters().bool("trailAfterScaleOut", false)).isTrue();
+        assertThat(validation.effectiveParameters().stringList("skipMarketRegimes", List.of("fallback"))).isEmpty();
     }
 
     @Test
@@ -70,11 +72,24 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         var validation = provider.validate(new StrategyParameters(Map.of(
                 "trendFilterMode", "HARD",
                 "adaptiveMomentumMode", "ALWAYS",
-                "stopMode", "MANUAL"
+                "stopMode", "MANUAL",
+                "skipMarketRegimes", List.of("UNKNOWN_REGIME")
         )));
 
         assertThat(validation.valid()).isFalse();
-        assertThat(validation.issues()).extracting("field").contains("trendFilterMode", "adaptiveMomentumMode", "stopMode");
+        assertThat(validation.issues()).extracting("field").contains("trendFilterMode", "adaptiveMomentumMode", "stopMode", "skipMarketRegimes");
+    }
+
+    @Test
+    void acceptsMarketRegimeSkipListParameter() {
+        var validation = provider.validate(new StrategyParameters(Map.of(
+                "skipMarketRegimes",
+                List.of("RANGING_LOW_VOLATILITY", "STRONG_TREND_MEDIUM_VOLATILITY")
+        )));
+
+        assertThat(validation.valid()).isTrue();
+        assertThat(validation.effectiveParameters().stringList("skipMarketRegimes", List.of()))
+                .containsExactly("RANGING_LOW_VOLATILITY", "STRONG_TREND_MEDIUM_VOLATILITY");
     }
 
     @Test
@@ -114,11 +129,13 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(intent.horizon().maxHoldingBars()).isEqualTo(64);
         assertThat(intent.exit().stop().type()).isEqualTo(StrategyExitRuleType.PERCENT);
         assertThat(intent.reason().tags()).contains("doflamingo", "v2", "multi-v6", "entry", "confidence");
+        assertThat(intent.reason().evidence()).contains("marketRegime=INSUFFICIENT_DATA", "skipMarketRegimes=[]");
         assertThat(intent.reason().conditions()).extracting("conditionId")
                 .contains(
                         "multi-v6-v2.psar-direction-up",
                         "multi-v6-v2.adaptive-momentum-confirmed",
                         "multi-v6-v2.trend-filter",
+                        "multi-v6-v2.market-regime-allowed",
                         "multi-v6-v2.confidence-threshold"
                 );
         assertThat(intent.reason().evidence()).contains("adaptiveMomentumMode=ADAPTIVE_CONFIRMATION");
@@ -169,6 +186,32 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
     }
 
     @Test
+    void configuredMarketRegimeSuppressesFlatEntryOnly() {
+        TradeIntentStrategy blocked = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "trendFilterMode", "SOFT",
+                "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY")
+        )), null);
+        TradeIntentStrategy allowed = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "trendFilterMode", "SOFT",
+                "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY")
+        )), null);
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars();
+
+        assertThat(firstIntent(blocked, bars, PrimaryMarketRegime.RANGING_LOW_VOLATILITY)).isNull();
+        assertThat(firstIntent(allowed, bars, PrimaryMarketRegime.STRONG_TREND_MEDIUM_VOLATILITY)).isNotNull();
+    }
+
+    @Test
     void scaleOutIntentUsesScaleFractionAndPositionProjectionPreventsRepeat() {
         TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
                 "macdFastPeriod", 3,
@@ -176,13 +219,15 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
                 "macdSignalPeriod", 8,
                 "minConfidence", "0.50",
                 "scaleOutAtR", "1.0",
-                "scaleOutFraction", "0.50"
+                "scaleOutFraction", "0.50",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY")
         )), null);
         List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars();
 
         var scale = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(
                 bars,
-                DoflamingoStrategyTestSupport.longPosition(6, 1.2d, 0)
+                DoflamingoStrategyTestSupport.longPosition(6, 1.2d, 0),
+                PrimaryMarketRegime.RANGING_LOW_VOLATILITY
         ));
 
         assertThat(scale.tradeIntents()).hasSize(1);
@@ -328,6 +373,20 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
     ) {
         for (int index = 1; index <= bars.size(); index++) {
             var result = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(bars.subList(0, index)));
+            if (!result.tradeIntents().isEmpty()) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult firstIntent(
+            TradeIntentStrategy strategy,
+            List<BarEvent> bars,
+            PrimaryMarketRegime primaryRegime
+    ) {
+        for (int index = 1; index <= bars.size(); index++) {
+            var result = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(bars.subList(0, index), primaryRegime));
             if (!result.tradeIntents().isEmpty()) {
                 return result;
             }

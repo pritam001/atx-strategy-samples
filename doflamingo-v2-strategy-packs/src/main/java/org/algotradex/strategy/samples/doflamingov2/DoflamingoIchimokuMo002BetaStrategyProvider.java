@@ -38,6 +38,7 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
     static final String CLOUD_STOP_BUFFER_PCT = "cloudStopBufferPct";
     static final String STRUCTURE_EXIT_CONFIRM_BARS = "structureExitConfirmBars";
     static final String COOLDOWN_BARS = "cooldownBars";
+    static final String SKIP_MARKET_REGIMES = DoflamingoMarketRegimeFilter.SKIP_MARKET_REGIMES;
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
             new StrategyParameterDefinition(ENTRY_MODE, StrategyParameterType.ENUM, "Entry Mode",
@@ -75,7 +76,10 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                     true, 2, BigDecimal.ONE, BigDecimal.valueOf(20), List.of()),
             new StrategyParameterDefinition(COOLDOWN_BARS, StrategyParameterType.INTEGER, "Cooldown Bars",
                     "Bars to wait after an emitted entry or exit before a fresh entry.",
-                    true, 3, BigDecimal.ZERO, BigDecimal.valueOf(50), List.of())
+                    true, 3, BigDecimal.ZERO, BigDecimal.valueOf(50), List.of()),
+            new StrategyParameterDefinition(SKIP_MARKET_REGIMES, StrategyParameterType.MULTI_ENUM, "Skip Market Regimes",
+                    "Market-context regimes where new Doflamingo Ichimoku v2 entries are skipped.",
+                    false, List.of(), null, null, DoflamingoMarketRegimeFilter.ALLOWED_REGIME_NAMES)
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -149,7 +153,8 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                 effective.decimal(ATR_STOP_MULTIPLE, BigDecimal.valueOf(1.5)),
                 effective.decimal(CLOUD_STOP_BUFFER_PCT, BigDecimal.valueOf(0.25)),
                 effective.integer(STRUCTURE_EXIT_CONFIRM_BARS, 2),
-                effective.integer(COOLDOWN_BARS, 3)
+                effective.integer(COOLDOWN_BARS, 3),
+                effective.stringList(SKIP_MARKET_REGIMES, List.of())
         );
     }
 }

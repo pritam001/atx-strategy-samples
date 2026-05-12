@@ -34,10 +34,13 @@ Available samples:
 - `doflamingo-multi-indicator-v6-trend-reversal-v1`: ports the Doflamingo V6 trend-reversal setup as a long-only reversal
   signal.
 - `doflamingo-ichimoku-mo-002-beta-v2`: ATX-adaptive Ichimoku lifecycle variant with structured trade-intent
-  condition evidence, risk-fraction entries, full-close exits, runtime stop policy, and explicit holding horizon.
+  condition evidence, risk-fraction entries, full-close exits, runtime stop policy, explicit holding horizon, and optional
+  market-context regime skip filters.
 - `doflamingo-multi-indicator-v6-trend-reversal-v2`: ATX-adaptive Multi V6 lifecycle variant with structured
   condition evidence, explicit adaptive momentum mode, trend-filtered entries, runtime stop policy, stale exits, and
-  one-shot scale-out intents.
+  one-shot scale-out intents. The v2 Doflamingo strategies expose `skipMarketRegimes` as a multi-select parameter for
+  primary market-context regimes such as `RANGING_LOW_VOLATILITY` or `STRONG_TREND_MEDIUM_VOLATILITY`; selected regimes
+  suppress new entry signals only, while position lifecycle exits and scale-outs remain active.
 - `ema-trend-structure-pullback-v2`: EMA trend-structure pullback lifecycle variant with signal-plus-intent entries,
   EMA50/ATR-derived percent stops, full-close exits, stale and max-holding discipline, one-shot scale-outs, and optional
   scale-ins. Defaults remain EMA20/50/200; compact EMA periods are allowed so the bundled replay fixture can validate

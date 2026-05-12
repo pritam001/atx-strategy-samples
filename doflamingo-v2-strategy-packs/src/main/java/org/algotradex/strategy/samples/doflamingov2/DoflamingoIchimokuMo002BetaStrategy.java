@@ -9,6 +9,7 @@ import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
+import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
@@ -19,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
@@ -40,6 +42,7 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
     private final BigDecimal cloudStopBufferPct;
     private final int structureExitConfirmBars;
     private final int cooldownBars;
+    private final Set<PrimaryMarketRegime> skipMarketRegimes;
     private int structureWeakBars;
     private int cooldownRemaining;
 
@@ -55,7 +58,8 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
             BigDecimal atrStopMultiple,
             BigDecimal cloudStopBufferPct,
             int structureExitConfirmBars,
-            int cooldownBars
+            int cooldownBars,
+            List<String> skipMarketRegimes
     ) {
         this.entryMode = EntryMode.valueOf(requireNonNull(entryMode, "entryMode"));
         this.minConfidence = requireNonNull(minConfidence, "minConfidence");
@@ -72,6 +76,7 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
         this.cloudStopBufferPct = requireNonNull(cloudStopBufferPct, "cloudStopBufferPct");
         this.structureExitConfirmBars = Math.max(1, structureExitConfirmBars);
         this.cooldownBars = Math.max(0, cooldownBars);
+        this.skipMarketRegimes = DoflamingoMarketRegimeFilter.regimes(skipMarketRegimes);
     }
 
     @Override
@@ -122,6 +127,9 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
         structureWeakBars = 0;
         if (cooldownRemaining > 0) {
             cooldownRemaining--;
+            return StrategyIntentResult.empty();
+        }
+        if (DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes)) {
             return StrategyIntentResult.empty();
         }
 
@@ -179,6 +187,7 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
                 DoflamingoSignalSupport.condition("ichimoku-v2.trend-positive", "Trend score is positive", "Trend score", trend, ">", "Zero", 0.0d, trendPositive),
                 DoflamingoSignalSupport.condition("ichimoku-v2.early-close-above-span-b", "Early close reclaimed Span B", "Candle close", close, ">", "Ichimoku Span B", ichimoku.presentSpanB(), earlyCloseAboveSpanB),
                 DoflamingoSignalSupport.condition("ichimoku-v2.early-prior-high-breakout", "Early transition broke prior five-bar high", "Candle close", close, ">", "Prior five-bar high", previousHigh, earlyBreakout),
+                DoflamingoMarketRegimeFilter.allowedCondition("ichimoku-v2.market-regime-allowed", context, skipMarketRegimes),
                 DoflamingoSignalSupport.condition("ichimoku-v2.confidence-threshold", "Dynamic confidence meets threshold", "Confidence", confidence.doubleValue(), ">=", "Minimum confidence", minConfidence.doubleValue(), true)
         );
 
@@ -203,7 +212,9 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
                         "entryMode=" + entryMode,
                         "confidence=" + confidence,
                         "strictSetup=" + strictSetup,
-                        "earlySetup=" + earlySetup
+                        "earlySetup=" + earlySetup,
+                        DoflamingoMarketRegimeFilter.marketRegimeEvidence(context),
+                        DoflamingoMarketRegimeFilter.skipRegimesEvidence(skipMarketRegimes)
                 ),
                 List.of("doflamingo", "v2", "adaptive", "ichimoku", "entry", "risk", "confidence"),
                 conditions

@@ -10,10 +10,16 @@ import org.algotradex.platform.contracts.common.refs.InstrumentRef;
 import org.algotradex.platform.contracts.common.refs.SourceRef;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.contracts.market.OHLCV;
+import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextSnapshot;
 import org.algotradex.platform.core.api.dto.common.replay.ReplayRunMetadata;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyPortfolioState;
+import org.algotradex.platform.core.api.enums.marketcontext.MarketContextReadiness;
+import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
+import org.algotradex.platform.core.api.enums.marketcontext.TrendDirection;
+import org.algotradex.platform.core.api.enums.marketcontext.TrendStrength;
+import org.algotradex.platform.core.api.enums.marketcontext.VolatilityBucket;
 import org.algotradex.platform.core.api.enums.replay.ReplayMode;
 
 import java.math.BigDecimal;
@@ -21,6 +27,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 final class DoflamingoStrategyTestSupport {
     private static final InstrumentRef INSTRUMENT = new InstrumentRef("NIFTY50", "Nifty 50", "NSE", AssetClass.INDEX, "INR");
@@ -37,6 +44,16 @@ final class DoflamingoStrategyTestSupport {
         return new StrategyExecutionContext(METADATA, history.getLast(), history);
     }
 
+    static StrategyExecutionContext context(List<BarEvent> history, PrimaryMarketRegime primaryRegime) {
+        return new StrategyExecutionContext(
+                METADATA,
+                history.getLast(),
+                history,
+                null,
+                marketContext(history, primaryRegime)
+        );
+    }
+
     static StrategyExecutionContext context(List<BarEvent> history, StrategyInstrumentPosition position) {
         return new StrategyExecutionContext(
                 METADATA,
@@ -44,6 +61,18 @@ final class DoflamingoStrategyTestSupport {
                 history,
                 null,
                 null,
+                position,
+                StrategyPortfolioState.empty()
+        );
+    }
+
+    static StrategyExecutionContext context(List<BarEvent> history, StrategyInstrumentPosition position, PrimaryMarketRegime primaryRegime) {
+        return new StrategyExecutionContext(
+                METADATA,
+                history.getLast(),
+                history,
+                null,
+                marketContext(history, primaryRegime),
                 position,
                 StrategyPortfolioState.empty()
         );
@@ -133,6 +162,58 @@ final class DoflamingoStrategyTestSupport {
                 null,
                 null
         );
+    }
+
+    private static MarketContextSnapshot marketContext(List<BarEvent> history, PrimaryMarketRegime primaryRegime) {
+        BarEvent current = history.getLast();
+        TrendStrength trendStrength = trendStrength(primaryRegime);
+        VolatilityBucket volatilityBucket = volatilityBucket(primaryRegime);
+        return new MarketContextSnapshot(
+                "ctx-" + primaryRegime.name().toLowerCase(Locale.ROOT),
+                "NIFTY50",
+                current.occurredAt(),
+                current.occurredAt(),
+                current.occurredAt(),
+                current.timeframe(),
+                Map.of(),
+                primaryRegime.name(),
+                List.of(primaryRegime.name()),
+                Map.of(),
+                trendStrength.name(),
+                primaryRegime,
+                primaryRegime,
+                trendStrength,
+                volatilityBucket,
+                TrendDirection.UNKNOWN,
+                MarketContextReadiness.READY,
+                List.of()
+        );
+    }
+
+    private static TrendStrength trendStrength(PrimaryMarketRegime primaryRegime) {
+        if (primaryRegime.name().startsWith("RANGING")) {
+            return TrendStrength.RANGING;
+        }
+        if (primaryRegime.name().startsWith("WEAK_TREND")) {
+            return TrendStrength.WEAK_TREND;
+        }
+        if (primaryRegime.name().startsWith("STRONG_TREND")) {
+            return TrendStrength.STRONG_TREND;
+        }
+        return TrendStrength.UNKNOWN;
+    }
+
+    private static VolatilityBucket volatilityBucket(PrimaryMarketRegime primaryRegime) {
+        if (primaryRegime.name().endsWith("LOW_VOLATILITY")) {
+            return VolatilityBucket.LOW_VOLATILITY;
+        }
+        if (primaryRegime.name().endsWith("MEDIUM_VOLATILITY")) {
+            return VolatilityBucket.MEDIUM_VOLATILITY;
+        }
+        if (primaryRegime.name().endsWith("HIGH_VOLATILITY")) {
+            return VolatilityBucket.HIGH_VOLATILITY;
+        }
+        return VolatilityBucket.UNKNOWN;
     }
 
     private static BigDecimal decimal(double value) {

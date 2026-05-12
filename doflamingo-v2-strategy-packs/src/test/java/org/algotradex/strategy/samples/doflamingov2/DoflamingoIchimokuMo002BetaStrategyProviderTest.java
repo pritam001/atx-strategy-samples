@@ -6,6 +6,7 @@ import org.algotradex.platform.contracts.common.enums.StrategyTradeAction;
 import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
+import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
@@ -38,12 +39,13 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
-        assertThat(descriptor.parameterSchema().parameters()).hasSize(12);
+        assertThat(descriptor.parameterSchema().parameters()).hasSize(13);
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().string("entryMode", "")).isEqualTo("HYBRID");
         assertThat(validation.effectiveParameters().decimal("minConfidence", BigDecimal.ZERO)).isEqualByComparingTo("0.60");
         assertThat(validation.effectiveParameters().integer("maxHoldingBars", 0)).isEqualTo(96);
         assertThat(validation.effectiveParameters().string("stopMode", "")).isEqualTo("CLOUD_OR_ATR");
+        assertThat(validation.effectiveParameters().stringList("skipMarketRegimes", List.of("fallback"))).isEmpty();
     }
 
     @Test
@@ -53,12 +55,25 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
                 "minConfidence", "1.50",
                 "trendAverageLookback", 1,
                 "riskFraction", "0.05",
-                "stopMode", "TRAILING"
+                "stopMode", "TRAILING",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY", "UNKNOWN_REGIME")
         )));
 
         assertThat(validation.valid()).isFalse();
         assertThat(validation.issues()).extracting("field")
-                .contains("entryMode", "minConfidence", "trendAverageLookback", "riskFraction", "stopMode");
+                .contains("entryMode", "minConfidence", "trendAverageLookback", "riskFraction", "stopMode", "skipMarketRegimes");
+    }
+
+    @Test
+    void acceptsMarketRegimeSkipListParameter() {
+        var validation = provider.validate(new StrategyParameters(Map.of(
+                "skipMarketRegimes",
+                List.of("RANGING_LOW_VOLATILITY", "STRONG_TREND_MEDIUM_VOLATILITY")
+        )));
+
+        assertThat(validation.valid()).isTrue();
+        assertThat(validation.effectiveParameters().stringList("skipMarketRegimes", List.of()))
+                .containsExactly("RANGING_LOW_VOLATILITY", "STRONG_TREND_MEDIUM_VOLATILITY");
     }
 
     @Test
@@ -94,7 +109,10 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
         assertThat(intent.sizing().riskFraction()).isEqualByComparingTo("0.0100");
         assertThat(intent.sourceBarId()).isNotBlank();
         assertThat(intent.reason().tags()).contains("doflamingo", "v2", "adaptive", "ichimoku", "entry", "confidence");
+        assertThat(intent.reason().evidence()).contains("marketRegime=INSUFFICIENT_DATA", "skipMarketRegimes=[]");
         assertThat(intent.reason().conditions()).hasSizeGreaterThanOrEqualTo(8);
+        assertThat(intent.reason().conditions()).extracting("conditionId")
+                .contains("ichimoku-v2.market-regime-allowed");
         assertThat(intent.reason().conditions())
                 .allSatisfy(condition -> {
                     assertThat(condition.conditionId()).isNotBlank();
@@ -128,10 +146,29 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
     }
 
     @Test
+    void configuredMarketRegimeSuppressesFlatEntryOnly() {
+        TradeIntentStrategy blocked = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY")
+        )), null);
+        TradeIntentStrategy allowed = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
+                "trendAverageLookback", 50,
+                "minConfidence", "0.50",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY")
+        )), null);
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+
+        assertThat(firstIntent(blocked, bars, PrimaryMarketRegime.RANGING_LOW_VOLATILITY)).isNull();
+        assertThat(firstIntent(allowed, bars, PrimaryMarketRegime.STRONG_TREND_MEDIUM_VOLATILITY)).isNotNull();
+    }
+
+    @Test
     void structureExitRequiresActualLongPositionAndUsesFullCloseSizing() {
         TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
                 "trendAverageLookback", 50,
-                "minConfidence", "0.50"
+                "minConfidence", "0.50",
+                "skipMarketRegimes", List.of("RANGING_LOW_VOLATILITY")
         )), null);
         List<BarEvent> bars = new ArrayList<>(DoflamingoStrategyTestSupport.ichimokuBetaSetupBars());
         bars.add(DoflamingoStrategyTestSupport.nextBarAfter(bars, 80.0d, 81.0d, 79.0d, 80.0d));
@@ -141,7 +178,8 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
 
         var positionedResult = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(
                 bars,
-                DoflamingoStrategyTestSupport.longPosition(4, 0.4d, 0)
+                DoflamingoStrategyTestSupport.longPosition(4, 0.4d, 0),
+                PrimaryMarketRegime.RANGING_LOW_VOLATILITY
         ));
 
         assertThat(positionedResult.tradeIntents()).hasSize(1);
@@ -179,6 +217,20 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
     ) {
         for (int index = 1; index <= bars.size(); index++) {
             var result = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(bars.subList(0, index)));
+            if (!result.tradeIntents().isEmpty()) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult firstIntent(
+            TradeIntentStrategy strategy,
+            List<BarEvent> bars,
+            PrimaryMarketRegime primaryRegime
+    ) {
+        for (int index = 1; index <= bars.size(); index++) {
+            var result = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(bars.subList(0, index), primaryRegime));
             if (!result.tradeIntents().isEmpty()) {
                 return result;
             }

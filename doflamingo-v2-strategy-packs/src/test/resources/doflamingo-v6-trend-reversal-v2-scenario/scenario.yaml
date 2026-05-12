@@ -31,6 +31,7 @@ strategies:
       scaleOutFraction: 0.50
       trailAfterScaleOut: true
       riskFraction: 0.01
+      skipMarketRegimes: []
 researchMode: false
 includeNoTradeBaseline: false
 marketDataPath: market-bars.csv

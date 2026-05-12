@@ -9,6 +9,7 @@ import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
+import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
@@ -17,6 +18,7 @@ import java.math.RoundingMode;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
@@ -43,6 +45,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     private final BigDecimal scaleOutFraction;
     private final boolean trailAfterScaleOut;
     private final BigDecimal riskFraction;
+    private final Set<PrimaryMarketRegime> skipMarketRegimes;
     private final DoflamingoIndicatorMath.MultiIndicatorTracker indicatorTracker;
     private int processedBars;
 
@@ -54,7 +57,8 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                                                     int atrPeriod, BigDecimal atrStopMultiple, int maxHoldingBars,
                                                     int staleBars, BigDecimal staleMinR, boolean enableScaleOut,
                                                     BigDecimal scaleOutAtR, BigDecimal scaleOutFraction,
-                                                    boolean trailAfterScaleOut, BigDecimal riskFraction) {
+                                                    boolean trailAfterScaleOut, BigDecimal riskFraction,
+                                                    List<String> skipMarketRegimes) {
         this.minConfidence = requireNonNull(minConfidence, "minConfidence");
         this.stochOverbought = requireNonNull(stochOverbought, "stochOverbought").doubleValue();
         this.stochOversold = requireNonNull(stochOversold, "stochOversold").doubleValue();
@@ -74,6 +78,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         this.scaleOutFraction = requireNonNull(scaleOutFraction, "scaleOutFraction");
         this.trailAfterScaleOut = trailAfterScaleOut;
         this.riskFraction = requireNonNull(riskFraction, "riskFraction");
+        this.skipMarketRegimes = DoflamingoMarketRegimeFilter.regimes(skipMarketRegimes);
         this.indicatorTracker = DoflamingoIndicatorMath.multiIndicatorTracker(macdFastPeriod, macdSlowPeriod, macdSignalPeriod);
     }
 
@@ -139,6 +144,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         if (position.hasPosition()) {
             return positionIntent(context, state, maybeEma50, reversalConfirmed, sellSignalStoch, sellSignalMacd);
         }
+        if (DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes)) {
+            return StrategyIntentResult.empty();
+        }
 
         boolean originalMomentum = buySignalMacd || buySignalStoch;
         boolean macdHistogramRising = state.macdHistogram() > state.previousMacdHistogram();
@@ -191,6 +199,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                 DoflamingoSignalSupport.condition("multi-v6-v2.adaptive-momentum-confirmed", "Adaptive momentum mode permits improving momentum", "Adaptive momentum", adaptiveMomentumEnabled && adaptiveMomentumConfirmed ? 1.0d : 0.0d, "=", "Required", 1.0d, adaptiveMomentumEnabled && adaptiveMomentumConfirmed),
                 DoflamingoSignalSupport.condition("multi-v6-v2.close-above-span-b", "Close above present Span B", "Candle close", close, ">", "Ichimoku Span B", state.presentSpanB(), close > state.presentSpanB()),
                 DoflamingoSignalSupport.condition("multi-v6-v2.trend-filter", "Adaptive trend filter passed", "Trend filter", trendFilterPassed ? 1.0d : 0.0d, "=", "Required", 1.0d, trendFilterPassed),
+                DoflamingoMarketRegimeFilter.allowedCondition("multi-v6-v2.market-regime-allowed", context, skipMarketRegimes),
                 DoflamingoSignalSupport.condition("multi-v6-v2.confidence-threshold", "Dynamic confidence meets threshold", "Confidence", confidence.doubleValue(), ">=", "Minimum confidence", minConfidence.doubleValue(), true)
         );
         TradeSignal signal = DoflamingoSignalSupport.longSignal(
@@ -214,7 +223,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                         "trendFilterMode=" + trendFilterMode,
                         "adaptiveMomentumMode=" + adaptiveMomentumMode,
                         "stopMode=" + stopMode,
-                        "confidence=" + confidence
+                        "confidence=" + confidence,
+                        DoflamingoMarketRegimeFilter.marketRegimeEvidence(context),
+                        DoflamingoMarketRegimeFilter.skipRegimesEvidence(skipMarketRegimes)
                 ),
                 List.of("doflamingo", "v2", "adaptive", "multi-v6", "entry", "risk", "confidence"),
                 conditions
