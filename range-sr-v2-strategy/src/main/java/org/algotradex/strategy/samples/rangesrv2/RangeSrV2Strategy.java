@@ -49,15 +49,15 @@ import java.util.Optional;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Lifecycle-aware range support/resistance sample using H4 context and M15 execution bars.
+ * Lifecycle-aware range support/resistance sample using H4 context and lower-timeframe execution bars.
  * <p>
  * The strategy requires H4 context history for trend strength and structure, then evaluates the
- * current M15 bar for discount/premium location, defended level confluence, and reversal-pattern
+ * current execution bar for discount/premium location, defended level confluence, and reversal-pattern
  * confirmation. Accepted setups emit both a legacy {@link TradeSignal} and an entry
  * {@link StrategyTradeIntent} with structured evidence and risk-aware sizing metadata.
  * <p>
  * The implementation keeps a per-instrument cooldown map and is expected to be used as a fresh,
- * run-scoped instance. It is deterministic for the same ordered M15/H4 histories and effective
+ * run-scoped instance. It is deterministic for the same ordered lower-timeframe/H4 histories and effective
  * parameters, but it is not thread-safe.
  * <p>
  * The sample does not own execution, broker routing, exchange session rules, lot/tick conversion,
@@ -70,6 +70,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
     private static final int EMA_PERIOD = 50;
     private static final int ATR_PERIOD = 14;
     private static final BigDecimal ONE_HUNDRED = BigDecimal.valueOf(100);
+    private static final BigDecimal MIN_NORMALIZED_UNITS = new BigDecimal("0.0001");
 
     private final RangeSrV2Parameters params;
     private final Map<String, Instant> cooldownUntilByInstrument = new LinkedHashMap<>();
@@ -106,13 +107,14 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
             return StrategyIntentResult.empty();
         }
 
-        List<BarEvent> bars15m = last(context.history("M15"), params.ltfLookback());
+        String executionTimeframe = executionTimeframe(current);
+        List<BarEvent> executionBars = last(context.history(executionTimeframe), params.ltfLookback());
         List<BarEvent> bars4h = last(context.history("H4"), params.htfLookback());
-        if (bars15m.size() < 20 || bars4h.size() < 50) {
+        if (executionBars.size() < 20 || bars4h.size() < 50) {
             return StrategyIntentResult.empty();
         }
 
-        Optional<Setup> setup = evaluate(current, bars4h, bars15m);
+        Optional<Setup> setup = evaluate(current, bars4h, executionBars, executionTimeframe);
         if (setup.isEmpty()) {
             return StrategyIntentResult.empty();
         }
@@ -218,7 +220,12 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
         return pivots;
     }
 
-    private Optional<Setup> evaluate(BarEvent current, List<BarEvent> bars4h, List<BarEvent> bars15m) {
+    private static String executionTimeframe(BarEvent current) {
+        String timeframe = current.timeframe();
+        return timeframe == null || timeframe.isBlank() ? "M15" : timeframe.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private Optional<Setup> evaluate(BarEvent current, List<BarEvent> bars4h, List<BarEvent> executionBars, String executionTimeframe) {
         BigDecimal price = current.ohlcv().close();
         BigDecimal adx4h = adx(bars4h, ADX_PERIOD);
         if (adx4h.compareTo(params.minTrendAdx()) < 0) {
@@ -234,7 +241,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
             return Optional.empty();
         }
 
-        List<BarEvent> structureBars = params.use15mStructure() ? bars15m : bars4h;
+        List<BarEvent> structureBars = params.use15mStructure() ? executionBars : bars4h;
         List<Pivot> pivots = fractalPivots(structureBars, params.pivotLookback());
         Optional<Pivot> high = pivots.stream()
                 .filter(pivot -> pivot.type() == PivotType.HIGH && pivot.price().compareTo(price) > 0)
@@ -264,15 +271,15 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
         if (confluence < params.minConfluence()) {
             return Optional.empty();
         }
-        if (!touchesLevel(bars15m.get(bars15m.size() - 1), level, side)) {
+        if (!touchesLevel(executionBars.get(executionBars.size() - 1), level, side)) {
             return Optional.empty();
         }
-        Optional<Pattern> pattern = reversalPattern(bars15m, side)
+        Optional<Pattern> pattern = reversalPattern(executionBars, side)
                 .filter(candidate -> candidate.confidence().compareTo(params.minPatternConfidence()) >= 0);
         if (pattern.isEmpty()) {
             return Optional.empty();
         }
-        BarEvent lastBar = bars15m.get(bars15m.size() - 1);
+        BarEvent lastBar = executionBars.get(executionBars.size() - 1);
         if (side == Side.BUY && lastBar.ohlcv().low().compareTo(level) < 0 && lastBar.ohlcv().close().compareTo(level) <= 0) {
             return Optional.empty();
         }
@@ -280,13 +287,13 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
             return Optional.empty();
         }
 
-        BigDecimal atr15m = atr(bars15m, ATR_PERIOD);
-        if (atr15m.signum() <= 0) {
+        BigDecimal atrExecution = atr(executionBars, ATR_PERIOD);
+        if (atrExecution.signum() <= 0) {
             return Optional.empty();
         }
         BigDecimal stop = side == Side.BUY
-                ? level.subtract(params.atrMultSL().multiply(atr15m, MC), MC)
-                : level.add(params.atrMultSL().multiply(atr15m, MC), MC);
+                ? level.subtract(params.atrMultSL().multiply(atrExecution, MC), MC)
+                : level.add(params.atrMultSL().multiply(atrExecution, MC), MC);
         BigDecimal risk = price.subtract(stop, MC).abs();
         if (risk.signum() <= 0) {
             return Optional.empty();
@@ -300,7 +307,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
         BigDecimal reward = target.subtract(price, MC).abs();
         BigDecimal rr = reward.divide(risk, MC);
         BigDecimal quantity = params.riskUsdPerTrade().divide(risk, MC);
-        return Optional.of(new Setup(side, price, stop, target, risk, rr, quantity, level, adx4h, ema50, midline, confluence, pattern.get()));
+        return Optional.of(new Setup(side, executionTimeframe, price, stop, target, risk, rr, quantity, level, adx4h, ema50, midline, confluence, pattern.get()));
     }
 
     private TradeSignal signal(BarEvent bar, Setup setup) {
@@ -315,7 +322,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
                 new TimeHorizon("intraday", Duration.ofHours(Math.max(1, params.cooldownHours()))),
                 bar.occurredAt(),
                 new SourceRef(SourceType.STRATEGY, strategyId()),
-                new SuggestedTradeParams(decimal(setup.entry()), decimal(setup.stop()), decimal(setup.target()), decimal(setup.quantity()), OrderType.MARKET),
+                new SuggestedTradeParams(decimal(setup.entry()), decimal(setup.stop()), decimal(setup.target()), normalizedUnits(setup.quantity()), OrderType.MARKET),
                 tags(setup),
                 bar.cohort(),
                 bar.baseline()
@@ -345,7 +352,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
                         new TradeIntentExitRule(StrategyExitRuleType.STRUCTURE, decimal(setup.target()), "Target is first real structure pivot at minimum RR"),
                         null
                 ),
-                new TradeIntentSizing(StrategySizingType.NORMALIZED_UNITS, decimal(setup.quantity()), null, null, null),
+                new TradeIntentSizing(StrategySizingType.NORMALIZED_UNITS, normalizedUnits(setup.quantity()), null, null, null),
                 new TradeIntentHorizon(Math.max(1, params.cooldownHours() * 4), Duration.ofHours(Math.max(1, params.cooldownHours())), IntendedHorizonLabel.INTRADAY),
                 new TradeIntentPreconditions(true, false, PositionSide.ANY, null),
                 null,
@@ -368,7 +375,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
                 "target=" + decimal(setup.target()).toPlainString(),
                 "risk=" + decimal(setup.risk()).toPlainString(),
                 "rr=" + decimal(setup.rr()).toPlainString(),
-                "requestedUnits=" + decimal(setup.quantity()).toPlainString(),
+                "requestedUnits=" + normalizedUnits(setup.quantity()).toPlainString(),
                 "adx4h=" + decimal(setup.adx4h()).toPlainString(),
                 "ema50h4=" + decimal(setup.ema50()).toPlainString(),
                 "midline=" + decimal(setup.midline()).toPlainString()
@@ -377,13 +384,13 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
                 condition("h4-trend", "H4 ADX trend gate", "adx4h", setup.adx4h(), ">=", "minTrendAdx", params.minTrendAdx(), true),
                 condition("zone-match", "Premium/discount zone gate", "side", setup.side().name(), "matches", "zone", setup.side() == Side.BUY ? "DISCOUNT" : "PREMIUM", true),
                 condition("confluence", "Structure confluence gate", "confluence", BigDecimal.valueOf(setup.confluence()), ">=", "minConfluence", BigDecimal.valueOf(params.minConfluence()), true),
-                condition("pattern", "M15 reversal pattern gate", "patternConfidence", setup.pattern().confidence(), ">=", "minPatternConfidence", params.minPatternConfidence(), true),
+                condition("pattern", setup.executionTimeframe() + " reversal pattern gate", "patternConfidence", setup.pattern().confidence(), ">=", "minPatternConfidence", params.minPatternConfidence(), true),
                 condition("rr", "Real target RR gate", "rr", setup.rr(), ">=", "minRR", params.atrMultMinRR(), true)
         );
         return new StrategyTradeIntentReason(
                 "Range S/R v2 " + setup.side().name().toLowerCase(Locale.ROOT) + " pullback at defended structure with real target",
                 evidence,
-                List.of("range-sr-v2", "h4-structure", "m15-confirmation", setup.pattern().type()),
+                List.of("range-sr-v2", "h4-structure", setup.executionTimeframe().toLowerCase(Locale.ROOT) + "-confirmation", setup.pattern().type()),
                 conditions
         );
     }
@@ -650,6 +657,11 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
         return value.setScale(4, RoundingMode.HALF_UP);
     }
 
+    private static BigDecimal normalizedUnits(BigDecimal value) {
+        BigDecimal rounded = decimal(value);
+        return value.signum() > 0 && rounded.signum() == 0 ? MIN_NORMALIZED_UNITS : rounded;
+    }
+
     enum Side {
         BUY,
         SELL
@@ -674,6 +686,7 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
 
     record Setup(
             Side side,
+            String executionTimeframe,
             BigDecimal entry,
             BigDecimal stop,
             BigDecimal target,

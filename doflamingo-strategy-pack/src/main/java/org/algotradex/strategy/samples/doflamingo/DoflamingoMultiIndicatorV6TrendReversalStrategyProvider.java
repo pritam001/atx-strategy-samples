@@ -74,7 +74,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
             "Doflamingo Multi Indicator V6 Trend Reversal",
             "Doflamingo long-only PSAR, MACD/Stoch RSI, and Ichimoku trend reversal setup.",
             List.of("M15", "H1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.PARAMETERIZED),
             SCHEMA,
             List.of(

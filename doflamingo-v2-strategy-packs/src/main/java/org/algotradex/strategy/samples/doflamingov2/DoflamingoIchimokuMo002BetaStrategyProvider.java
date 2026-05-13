@@ -96,7 +96,7 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
             "Doflamingo Ichimoku Momentum 002 Beta V2",
             "ATX-adaptive long-only Ichimoku lifecycle strategy with structured trade-intent evidence.",
             List.of("M15", "H1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(
                     StrategyCapability.LONG_SIGNALS,
                     StrategyCapability.TRADE_INTENT,

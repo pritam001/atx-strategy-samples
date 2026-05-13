@@ -24,7 +24,7 @@ import java.util.Map;
 /**
  * ServiceLoader entrypoint for {@code range-sr-v2}.
  * <p>
- * The descriptor advertises an M15 strategy that requires H4 context history and publishes chart
+ * The descriptor advertises a lower-timeframe strategy that requires H4 context history and publishes chart
  * studies for ADX, EMA, ATR, and structural pivots. Provider validation bounds effective
  * parameters, checks lookback relationships, and creates a fresh run-scoped
  * {@link TradeIntentStrategy} implementation.
@@ -61,9 +61,9 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
             decimal(ATR_MULT_SL, "ATR Stop Multiple", "ATR(14) multiple placed beyond the defended structure level.", "1.5", "0.1", "10.0"),
             decimal(ATR_MULT_MIN_RR, "Minimum RR Multiple", "Minimum real-structure target distance in R.", "2.0", "0.5", "10.0"),
             decimal(RISK_USD_PER_TRADE, "Risk USD Per Trade", "Dollar risk used to convert stop distance into requested units.", "1.0", "0.01", "100000.0"),
-            bool(USE_15M_STRUCTURE, "Use 15m Structure", "Use M15 pivots for structure instead of the default H4 pivots.", false),
+            bool(USE_15M_STRUCTURE, "Use LTF Structure", "Use execution-timeframe pivots for structure instead of the default H4 pivots.", false),
             integer(HTF_LOOKBACK, "H4 Lookback", "Maximum H4 candles used for trend and structure.", 200, 50, 1000),
-            integer(LTF_LOOKBACK, "M15 Lookback", "Maximum M15 candles used for pattern and execution checks.", 200, 20, 2000),
+            integer(LTF_LOOKBACK, "Execution Lookback", "Maximum execution-timeframe candles used for pattern and execution checks.", 200, 20, 2000),
             integer(PIVOT_LOOKBACK, "Pivot Lookback", "Confirmed fractal-pivot wing size.", 3, 1, 10),
             integer(COOLDOWN_HOURS, "Cooldown Hours", "Per-instrument setup cooldown after a signal.", 4, 0, 72),
             decimal(LEVEL_TOLERANCE_PCT, "Level Tolerance %", "Fractional proximity tolerance for levels, round numbers, and fibs.", "0.002", "0.0001", "0.05"),
@@ -74,9 +74,9 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
             PROVIDER_ID,
             "Range S/R v2",
-            "H4 structure and M15 reversal strategy with real support/resistance targets and risk-aware sizing.",
-            List.of("M15"),
-            List.of("EQUITY", "INDEX"),
+            "H4 structure and lower-timeframe reversal strategy with real support/resistance targets and risk-aware sizing.",
+            List.of("M1", "M5", "M15"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of("H4"),
             List.of(),
             List.of(
@@ -92,7 +92,7 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
             List.of(
                     study("adx", "ADX", "h4-trend-strength", Map.of("period", 14, "timeframe", "H4"), true),
                     study("ema", "EMA", "h4-ema50-trend", Map.of("period", 50, "timeframe", "H4"), true),
-                    study("atr", "ATR", "m15-stop-buffer", Map.of("period", 14, "timeframe", "M15"), true),
+                    study("atr", "ATR", "execution-stop-buffer", Map.of("period", 14, "timeframe", "PRIMARY"), true),
                     study("fractal-pivots", "Fractal Pivots", "structure-levels", Map.of("lookback", 3, "timeframe", "H4"), true)
             )
     );
@@ -111,7 +111,7 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
         StrategyParameters effective = result.effectiveParameters();
         List<StrategyValidationIssue> issues = new ArrayList<>();
         if (effective.integer(LTF_LOOKBACK, 200) < 20) {
-            issues.add(new StrategyValidationIssue(LTF_LOOKBACK, "M15 lookback must be at least 20"));
+            issues.add(new StrategyValidationIssue(LTF_LOOKBACK, "Execution lookback must be at least 20"));
         }
         if (effective.integer(HTF_LOOKBACK, 200) < 50) {
             issues.add(new StrategyValidationIssue(HTF_LOOKBACK, "H4 lookback must be at least 50"));
@@ -127,7 +127,7 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
         return List.of(
                 study("adx", "ADX", "h4-trend-strength", Map.of("period", 14, "timeframe", "H4"), true),
                 study("ema", "EMA", "h4-ema50-trend", Map.of("period", 50, "timeframe", "H4"), true),
-                study("atr", "ATR", "m15-stop-buffer", Map.of("period", 14, "timeframe", "M15"), true),
+                study("atr", "ATR", "execution-stop-buffer", Map.of("period", 14, "timeframe", "PRIMARY"), true),
                 study("fractal-pivots", "Fractal Pivots", "structure-levels",
                         Map.of("lookback", effectiveParameters.integer(PIVOT_LOOKBACK, 3), "timeframe", "H4"), true)
         );

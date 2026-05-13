@@ -81,7 +81,7 @@ public final class Sma20PullbackContinuationStrategyProvider implements Strategy
             "SMA 20 Pullback Continuation",
             "External baseline candidate that emits SMA20 pullback continuation setup events with SMA200 context.",
             List.of("M15", "H1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.SHORT_SIGNALS, StrategyCapability.PARAMETERIZED),
             SCHEMA,
             List.of(

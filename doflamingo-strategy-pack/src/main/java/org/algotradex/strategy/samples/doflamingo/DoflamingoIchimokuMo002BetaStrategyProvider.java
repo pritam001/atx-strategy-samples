@@ -52,7 +52,7 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
             "Doflamingo Ichimoku Momentum 002 Beta",
             "Doflamingo long-only Ichimoku momentum variant with positive moving-average trend acceleration.",
             List.of("M15", "H1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.PARAMETERIZED),
             SCHEMA,
             List.of(

@@ -130,7 +130,7 @@ public final class EmaTrendStructurePullbackStrategyProvider implements Strategy
             "EMA Trend Structure Pullback Lifecycle",
             "External EMA20/50/200 trend-structure strategy that emits lifecycle trade intents for pullback continuation setups.",
             List.of("M15", "H1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(
                     StrategyCapability.LONG_SIGNALS,
                     StrategyCapability.SHORT_SIGNALS,

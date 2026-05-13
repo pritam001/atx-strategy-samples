@@ -84,7 +84,7 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
             "Range Support/Resistance",
             "Sample external strategy that emits closed-bar range support/resistance confirmation signals.",
             List.of("M15", "H1", "D1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.SHORT_SIGNALS, StrategyCapability.PARAMETERIZED),
             SCHEMA
     );

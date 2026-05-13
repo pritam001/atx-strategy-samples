@@ -84,7 +84,7 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
             "EMA Crossover",
             "Sample external strategy that emits closed-bar EMA crossover signals.",
             List.of("M15", "H1", "D1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.SHORT_SIGNALS, StrategyCapability.PARAMETERIZED),
             SCHEMA
     );

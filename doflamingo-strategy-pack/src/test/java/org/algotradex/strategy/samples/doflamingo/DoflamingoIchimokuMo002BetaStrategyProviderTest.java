@@ -26,7 +26,7 @@ class DoflamingoIchimokuMo002BetaStrategyProviderTest {
         assertThat(descriptor.identity().strategyId()).isEqualTo(DoflamingoIchimokuMo002BetaStrategyProvider.STRATEGY_ID);
         assertThat(descriptor.providerId()).isEqualTo(DoflamingoIchimokuMo002BetaStrategyProvider.PROVIDER_ID);
         assertThat(descriptor.supportedTimeframes()).containsExactly("M15", "H1");
-        assertThat(descriptor.supportedAssetClasses()).containsExactly("EQUITY", "INDEX");
+        assertThat(descriptor.supportedAssetClasses()).containsExactly("EQUITY", "INDEX", "CRYPTO");
         assertThat(descriptor.parameterSchema().parameters()).hasSize(2);
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().decimal("confidence", BigDecimal.ZERO)).isEqualByComparingTo("0.7");

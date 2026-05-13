@@ -31,6 +31,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.ServiceLoader;
 
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class RangeSrV2StrategyProviderTest {
     private static final InstrumentRef INSTRUMENT = new InstrumentRef("NIFTY50", "Nifty 50", "NSE", AssetClass.INDEX, "INR");
+    private static final InstrumentRef CRYPTO_INSTRUMENT = new InstrumentRef("CRYPTO-BTC-INR", "BTC/INR", "COINSWITCHX", AssetClass.CRYPTO, "INR");
     private static final ReplayRunMetadata METADATA = new ReplayRunMetadata(
             new RunId("run-range-sr-v2-test"),
             new ReplayId("replay-range-sr-v2-test"),
@@ -54,7 +56,7 @@ class RangeSrV2StrategyProviderTest {
         assertThat(descriptor.identity().strategyId()).isEqualTo("range-sr-v2");
         assertThat(descriptor.identity().strategyVersion()).isEqualTo("1.0.0");
         assertThat(descriptor.providerId()).isEqualTo("atx-strategy-samples");
-        assertThat(descriptor.supportedTimeframes()).containsExactly("M15");
+        assertThat(descriptor.supportedTimeframes()).containsExactly("M1", "M5", "M15");
         assertThat(descriptor.requiredContextTimeframes()).containsExactly("H4");
         assertThat(descriptor.capabilities()).contains(
                 StrategyCapability.LONG_SIGNALS,
@@ -109,6 +111,36 @@ class RangeSrV2StrategyProviderTest {
     }
 
     @Test
+    void supportsM1AndM5ExecutionTimeframes() {
+        for (String timeframe : List.of("M1", "M5")) {
+            TradeIntentStrategy strategy = strategy(Map.of());
+            List<BarEvent> executionBars = retime(bullishM15Setup(), timeframe, timeframe.equals("M1") ? 60L : 300L);
+
+            StrategyIntentResult result = strategy.onBarIntent(context(executionBars, h4TrendStructure(130.0d)));
+
+            assertThat(result.tradeSignals()).as(timeframe).hasSize(1);
+            assertThat(result.tradeIntents()).as(timeframe).hasSize(1);
+            assertThat(result.tradeIntents().getFirst().reason().conditions())
+                    .as(timeframe)
+                    .anySatisfy(condition -> assertThat(condition.label()).contains(timeframe));
+        }
+    }
+
+    @Test
+    void preservesPositiveNormalizedUnitsForHighPricedCryptoSetups() {
+        TradeIntentStrategy strategy = strategy(Map.of("riskUsdPerTrade", "1"));
+        StrategyIntentResult result = strategy.onBarIntent(context(
+                scalePrices(bullishM15Setup(), 10_000.0d, CRYPTO_INSTRUMENT),
+                scalePrices(h4TrendStructure(130.0d), 10_000.0d, CRYPTO_INSTRUMENT)
+        ));
+
+        assertThat(result.tradeSignals()).hasSize(1);
+        assertThat(result.tradeIntents()).hasSize(1);
+        assertThat(result.tradeSignals().getFirst().suggestedParams().size()).isEqualByComparingTo("0.0001");
+        assertThat(result.tradeIntents().getFirst().sizing().requestedUnits()).isEqualByComparingTo("0.0001");
+    }
+
+    @Test
     void enforcesPerInstrumentCooldown() {
         TradeIntentStrategy strategy = strategy(Map.of("cooldownHours", 4));
         StrategyExecutionContext first = context(bullishM15Setup(), h4TrendStructure(130.0d));
@@ -159,13 +191,13 @@ class RangeSrV2StrategyProviderTest {
         return (TradeIntentStrategy) provider.create(new StrategyParameters(params), null);
     }
 
-    private static StrategyExecutionContext context(List<BarEvent> m15, List<BarEvent> h4) {
-        BarEvent current = m15.getLast();
+    private static StrategyExecutionContext context(List<BarEvent> executionBars, List<BarEvent> h4) {
+        BarEvent current = executionBars.getLast();
         return new StrategyExecutionContext(
                 METADATA,
                 current,
-                m15,
-                new MarketDataVisibilitySnapshot(current.occurredAt(), "M15", Map.of("H4", h4), List.of()),
+                executionBars,
+                new MarketDataVisibilitySnapshot(current.occurredAt(), current.timeframe(), Map.of("H4", h4), List.of()),
                 null
         );
     }
@@ -240,6 +272,53 @@ class RangeSrV2StrategyProviderTest {
             ));
         }
         return shifted;
+    }
+
+    private static List<BarEvent> scalePrices(List<BarEvent> source, double multiplier, InstrumentRef instrument) {
+        List<BarEvent> scaled = new ArrayList<>();
+        BigDecimal factor = BigDecimal.valueOf(multiplier);
+        for (BarEvent bar : source) {
+            OHLCV ohlcv = bar.ohlcv();
+            scaled.add(new BarEvent(
+                    bar.schemaVersion(),
+                    new EventId(bar.eventId().value() + "-scaled"),
+                    instrument,
+                    bar.occurredAt(),
+                    bar.timeframe(),
+                    new OHLCV(
+                            ohlcv.open().multiply(factor).setScale(4, RoundingMode.HALF_UP),
+                            ohlcv.high().multiply(factor).setScale(4, RoundingMode.HALF_UP),
+                            ohlcv.low().multiply(factor).setScale(4, RoundingMode.HALF_UP),
+                            ohlcv.close().multiply(factor).setScale(4, RoundingMode.HALF_UP),
+                            ohlcv.volume()
+                    ),
+                    bar.sourceRef(),
+                    bar.cohort(),
+                    bar.baseline(),
+                    bar.tags()
+            ));
+        }
+        return scaled;
+    }
+
+    private static List<BarEvent> retime(List<BarEvent> source, String timeframe, long seconds) {
+        List<BarEvent> retimed = new ArrayList<>();
+        for (int index = 0; index < source.size(); index++) {
+            BarEvent bar = source.get(index);
+            retimed.add(new BarEvent(
+                    bar.schemaVersion(),
+                    new EventId(timeframe.toLowerCase(Locale.ROOT) + "-bar-%03d".formatted(index + 1)),
+                    bar.instrument(),
+                    Instant.parse("2026-04-11T09:15:00Z").plusSeconds(index * seconds),
+                    timeframe,
+                    bar.ohlcv(),
+                    bar.sourceRef(),
+                    bar.cohort(),
+                    bar.baseline(),
+                    bar.tags()
+            ));
+        }
+        return retimed;
     }
 
     private static BarEvent m15(int index, double open, double high, double low, double close) {

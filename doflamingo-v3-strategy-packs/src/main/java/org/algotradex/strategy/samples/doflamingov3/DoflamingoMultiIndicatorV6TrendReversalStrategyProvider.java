@@ -166,7 +166,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
             "Doflamingo Multi Indicator V6 Trend Reversal V3",
             "Short-capable multi-indicator trend reversal lifecycle strategy with structured trade-intent evidence.",
             List.of("M15", "H1"),
-            List.of("EQUITY", "INDEX"),
+            List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(
                     StrategyCapability.LONG_SIGNALS,
                     StrategyCapability.SHORT_SIGNALS,
