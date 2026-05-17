@@ -30,5 +30,6 @@
         <module>sma-20-pullback-continuation-strategy</module>
         <module>ema-trend-structure-pullback-strategy</module>
         <module>doflamingo-v3-strategy-packs</module>
+        <module>perplexity-strategies</module>
     </modules>
 </project>

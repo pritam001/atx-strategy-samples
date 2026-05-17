@@ -1,0 +1,4 @@
+org.algotradex.strategy.samples.perplexity.IndiaOrbBreakoutStrategyProvider
+org.algotradex.strategy.samples.perplexity.IndiaBollingerRsiRangeStrategyProvider
+org.algotradex.strategy.samples.perplexity.IndiaVwapReversionStrategyProvider
+org.algotradex.strategy.samples.perplexity.IndiaRsiSwingDailyStrategyProvider
