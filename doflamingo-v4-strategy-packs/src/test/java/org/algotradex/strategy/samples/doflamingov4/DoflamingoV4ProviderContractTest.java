@@ -19,13 +19,13 @@ class DoflamingoV4ProviderContractTest {
             new DoflamingoIchimokuMo002BetaV4StrategyProvider();
 
     @Test
-    void trendV4DescriptorUsesNewIdentityDefaultsAndNoAdaptiveEscapeHatch() {
+    void trendV4DescriptorUsesV41RelaxedDefaultsAndNoAdaptiveEscapeHatch() {
         var descriptor = trendProvider.descriptor();
         var validation = trendProvider.validate(StrategyParameters.empty());
         var effective = validation.effectiveParameters();
 
         assertThat(descriptor.identity().strategyId()).isEqualTo("doflamingo-multi-indicator-v6-trend-reversal-v4");
-        assertThat(descriptor.identity().strategyVersion()).isEqualTo("4.0.0");
+        assertThat(descriptor.identity().strategyVersion()).isEqualTo("4.1.0");
         assertThat(descriptor.providerId()).isEqualTo("doflamingo-v4-strategy-packs");
         assertThat(descriptor.displayName()).contains("V4");
         assertThat(descriptor.capabilities()).contains(
@@ -66,19 +66,21 @@ class DoflamingoV4ProviderContractTest {
         assertThat(effective.decimal("scaleOutFraction", BigDecimal.ZERO)).isEqualByComparingTo("0.40");
         assertThat(effective.decimal("riskFraction", BigDecimal.ZERO)).isEqualByComparingTo("0.0075");
         assertThat(effective.decimal("targetRMultiple", BigDecimal.ZERO)).isEqualByComparingTo("2.50");
-        assertThat(effective.bool("sessionGating", false)).isTrue();
-        assertThat(effective.stringList("skipMarketRegimes", List.of()))
-                .containsExactly("STRONG_TREND_HIGH_VOLATILITY", "RANGING_HIGH_VOLATILITY");
+        assertThat(effective.integer("requireRsiExtremeWithinBars", -1)).isZero();
+        assertThat(effective.decimal("volumeConfirmMultiple", BigDecimal.ONE)).isEqualByComparingTo("0.0");
+        assertThat(effective.decimal("maxPortfolioDrawdownPct", BigDecimal.ONE)).isEqualByComparingTo("0.0");
+        assertThat(effective.bool("sessionGating", true)).isFalse();
+        assertThat(effective.stringList("skipMarketRegimes", List.of("unexpected"))).isEmpty();
     }
 
     @Test
-    void ichimokuV4DescriptorDeclaresH1ContextAndCloudQualityGates() {
+    void ichimokuV4DescriptorUsesV42MomentumDefaultsAndCloudQualityGates() {
         var descriptor = ichimokuProvider.descriptor();
         var validation = ichimokuProvider.validate(StrategyParameters.empty());
         var effective = validation.effectiveParameters();
 
         assertThat(descriptor.identity().strategyId()).isEqualTo("doflamingo-ichimoku-mo-002-beta-v4");
-        assertThat(descriptor.identity().strategyVersion()).isEqualTo("4.0.0");
+        assertThat(descriptor.identity().strategyVersion()).isEqualTo("4.2.0");
         assertThat(descriptor.providerId()).isEqualTo("doflamingo-v4-strategy-packs");
         assertThat(descriptor.requiredContextTimeframes()).containsExactly("H1");
         assertThat(descriptor.capabilities()).contains(
@@ -105,13 +107,18 @@ class DoflamingoV4ProviderContractTest {
                 .doesNotContain("earningsCalendarRef");
 
         assertThat(validation.valid()).isTrue();
-        assertThat(effective.string("htfCloudBiasMode", "")).isEqualTo("ALIGN_WITH_TRADE");
-        assertThat(effective.decimal("minKumoThicknessAtr", BigDecimal.ZERO)).isEqualByComparingTo("0.25");
-        assertThat(effective.decimal("maxEntryAtrFromCloudTop", BigDecimal.ZERO)).isEqualByComparingTo("2.50");
+        assertThat(effective.string("htfCloudBiasMode", "")).isEqualTo("OFF");
+        assertThat(effective.decimal("minKumoThicknessAtr", BigDecimal.ZERO)).isEqualByComparingTo("0.10");
+        assertThat(effective.decimal("minFutureCloudSpreadAtr", BigDecimal.ZERO)).isEqualByComparingTo("0.05");
+        assertThat(effective.bool("requireFutureCloudWidening", true)).isFalse();
+        assertThat(effective.bool("requireChikouClearSpace", true)).isFalse();
+        assertThat(effective.integer("tkCrossFreshBars", 0)).isEqualTo(12);
+        assertThat(effective.decimal("maxEntryAtrFromCloudTop", BigDecimal.ONE)).isEqualByComparingTo("0.0");
         assertThat(effective.decimal("targetRMultiple", BigDecimal.ZERO)).isEqualByComparingTo("2.50");
-        assertThat(effective.bool("sessionGating", false)).isTrue();
-        assertThat(effective.stringList("skipMarketRegimes", List.of()))
-                .containsExactly("STRONG_TREND_HIGH_VOLATILITY", "RANGING_HIGH_VOLATILITY");
+        assertThat(effective.decimal("volumeConfirmMultiple", BigDecimal.ONE)).isEqualByComparingTo("0.0");
+        assertThat(effective.decimal("atrExpansionMultiple", BigDecimal.ONE)).isEqualByComparingTo("0.0");
+        assertThat(effective.bool("sessionGating", true)).isFalse();
+        assertThat(effective.stringList("skipMarketRegimes", List.of("unexpected"))).isEmpty();
     }
 
     @Test

@@ -73,19 +73,20 @@ class DoflamingoV4StrategyBehaviorTest {
     }
 
     @Test
-    void ichimokuV4RequiresVisibleH1BiasBeforeFlatEntry() {
+    void ichimokuV4CanStillRequireVisibleH1BiasWhenConfigured() {
         var provider = new DoflamingoIchimokuMo002BetaV4StrategyProvider();
-        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.of(
-                "trendAverageLookback", 50,
-                "minConfidence", "0.50",
-                "sessionGating", false,
-                "minKumoThicknessAtr", "0.0",
-                "minFutureCloudSpreadAtr", "0.0",
-                "maxEntryAtrFromCloudTop", "50.0",
-                "requireChikouClearSpace", false,
-                "requireFutureCloudWidening", false,
-                "volumeConfirmMultiple", "0.0",
-                "atrExpansionMultiple", "0.0"
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.ofEntries(
+                Map.entry("trendAverageLookback", 50),
+                Map.entry("minConfidence", "0.50"),
+                Map.entry("htfCloudBiasMode", "ALIGN_WITH_TRADE"),
+                Map.entry("sessionGating", false),
+                Map.entry("minKumoThicknessAtr", "0.0"),
+                Map.entry("minFutureCloudSpreadAtr", "0.0"),
+                Map.entry("maxEntryAtrFromCloudTop", "50.0"),
+                Map.entry("requireChikouClearSpace", false),
+                Map.entry("requireFutureCloudWidening", false),
+                Map.entry("volumeConfirmMultiple", "0.0"),
+                Map.entry("atrExpansionMultiple", "0.0")
         )), null);
 
         StrategyIntentResult result = firstIntent(strategy, DoflamingoStrategyTestSupport.ichimokuBetaSetupBars());
@@ -99,6 +100,7 @@ class DoflamingoV4StrategyBehaviorTest {
         TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.ofEntries(
                 Map.entry("trendAverageLookback", 50),
                 Map.entry("minConfidence", "0.50"),
+                Map.entry("htfCloudBiasMode", "ALIGN_WITH_TRADE"),
                 Map.entry("sessionGating", false),
                 Map.entry("minKumoThicknessAtr", "0.0"),
                 Map.entry("minFutureCloudSpreadAtr", "0.0"),
@@ -128,6 +130,36 @@ class DoflamingoV4StrategyBehaviorTest {
                         "ichimoku-v4.future-cloud-spread",
                         "ichimoku-v4.entry-overextension"
                 );
+    }
+
+    @Test
+    void ichimokuV4ZeroMaxEntryDistanceDisablesCloudDistanceCap() {
+        var provider = new DoflamingoIchimokuMo002BetaV4StrategyProvider();
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(new StrategyParameters(Map.ofEntries(
+                Map.entry("trendAverageLookback", 50),
+                Map.entry("minConfidence", "0.50"),
+                Map.entry("htfCloudBiasMode", "ALIGN_WITH_TRADE"),
+                Map.entry("sessionGating", false),
+                Map.entry("minKumoThicknessAtr", "0.0"),
+                Map.entry("minFutureCloudSpreadAtr", "0.0"),
+                Map.entry("maxEntryAtrFromCloudTop", "0.0"),
+                Map.entry("requireChikouClearSpace", false),
+                Map.entry("requireFutureCloudWidening", false),
+                Map.entry("volumeConfirmMultiple", "0.0"),
+                Map.entry("atrExpansionMultiple", "0.0")
+        )), null);
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        List<BarEvent> h1 = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+
+        StrategyIntentResult result = firstIntentWithH1(strategy, primary, h1);
+
+        assertThat(result).isNotNull();
+        assertThat(result.tradeIntents()).hasSize(1);
+        assertThat(result.tradeIntents().getFirst().reason().conditions())
+                .filteredOn(condition -> condition.conditionId().equals("ichimoku-v4.entry-overextension"))
+                .singleElement()
+                .extracting("passed")
+                .isEqualTo(true);
     }
 
     private static StrategyIntentResult firstIntent(TradeIntentStrategy strategy, List<BarEvent> bars) {

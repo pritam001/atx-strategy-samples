@@ -19,21 +19,35 @@
 > **Companion docs.**
 > - `atx-platform-core/docs/strategy-author-guide.md` — canonical SPI.
 > - `atx-design-docs/planning/atx-custom-strategy-plan.md` — strategy-family blueprints (§2 India context, §3.5 Reversal
-  Trading).
+    Trading).
 > - `atx-design-docs/planning/atx-backtest-framework-asks.md` — SPI gaps the strategy hits (FA-INST-03 session,
-  FA-INST-05 expiry, FA-INST-04 circuits, FA-RISK-06 time-stop).
+    FA-INST-05 expiry, FA-INST-04 circuits, FA-RISK-06 time-stop).
 > - This repo's `docs/doflamingo-v3-shorting.md` — v3 short-side DDR. Long-side baseline contract lives there too.
 
 ---
 
-## 0. Current Implementation Status And Platform Gaps
+## 0. Regression Status And V4.1 Calibration
+
+**Implementation status (2026-05-17 RunSet `20260517211242`):** V4 shipped with all
+entry gates enabled by default, producing catastrophic over-filtering (-71% trades on
+Ichimoku, -98% on Trend Reversal, -90% / -96% on net return). See
+`doflamingo-v4-regression-rca.md` for the RCA and the V4.1 default-relaxation plan.
+
+The original strategy-mechanic findings in this doc remain valid; only the default
+on/off decisions were revisited. V4.1 keeps the same strategy id and relaxes defaults
+so the strict gates remain opt-in where they have not been A/B validated. RunSet
+`20260517220546` then confirmed Trend Reversal V4.1 as the stable split-verdict
+outcome: same return class as V3 with fewer trades, higher per-trade quality, and
+smaller worst loss.
+
+## 0.1. Current Implementation Status And Platform Gaps
 
 Implemented module:
 
 - `doflamingo-v4-strategy-packs/`
 - Provider id: `doflamingo-v4-strategy-packs`
 - Strategy id: `doflamingo-multi-indicator-v6-trend-reversal-v4`
-- Strategy version: `4.0.0`
+- Strategy version: `4.1.0`
 - V3 strategy/provider code was not modified.
 
 Implemented within the current strategy SPI:
@@ -43,8 +57,10 @@ Implemented within the current strategy SPI:
 - cooldown, structure-exit confirmation, recent RSI extreme, volume confirmation,
   long PSAR distance, deterministic session gate, portfolio drawdown gate
 - explicit time-stop exits and RR target metadata on entry exit policies
-- default `skipMarketRegimes` uses `STRONG_TREND_HIGH_VOLATILITY` and
-  `RANGING_HIGH_VOLATILITY`
+- V4.1 keeps the entry-tightening trifecta, trend filter, cooldown, structure-exit,
+  stale-exit, target-R, scale-out, PSAR distance, and risk defaults enabled. It
+  default-disables RSI-extreme lookback, volume confirmation, portfolio drawdown,
+  session gating, and regime skipping until A/B data supports re-enabling them.
 
 Platform gaps not added to platform:
 
@@ -239,45 +255,45 @@ anything. Lift back to Ichimoku too (see §8).
 
 ### 5.1 Entry gates to ADD
 
-| #   | Gate                                             | Mechanism                                                                                   | Default                                                               |
-|-----|--------------------------------------------------|---------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
-| E1  | **Drop MACD zero-cross OR**                      | Remove line 168–169 fallback; keep only `originalBuySignalMacd` (3-bar curl-up)             | Tightens MACD to V2-original semantic.                                |
-| E2  | **Tighten Stoch threshold**                      | Replace `< stochOversold + 10` with `< stochOversold`                                       | Default `< 20`, not `< 30`.                                           |
-| E3  | **Remove `ADAPTIVE_CONFIRMATION` mode entirely** | Delete enum value + the OR branch (line 197–201)                                            | One less knob, one fewer escape hatch.                                |
-| E4  | **Multi-bar momentum confirmation**              | Replace single-bar `macdHistogramRising` with `N-of-3-bars rising`                          | Default `>= 2 of last 3`.                                             |
-| E5  | **Cooldown after entry / exit**                  | Mirror Ichimoku's `cooldownRemaining` field + tick-down each bar                            | `cooldownBars = 4` (1h M15).                                          |
-| E6  | **Volume confirmation**                          | Current bar's volume vs 20-bar SMA                                                          | `volumeConfirmMultiple = 1.0` (skip ghost-volume bars).               |
-| E7  | **Anti-knife-catch RSI lookback**                | Require RSI < `rsiOversoldLong` within last N bars, not just the current bar                | `requireRsiExtremeWithinBars = 5` per §3.5 mitigant.                  |
-| E8  | **Long-side PSAR-distance floor**                | Mirror the short-side `MIN_SHORT_PSAR_DISTANCE_PCT = 0.05` to the long side                 | `psarMinDistanceLongPct = 0.05`.                                      |
+| #   | Gate                                             | Mechanism                                                                                    | Default                                                                                                 |
+|-----|--------------------------------------------------|----------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
+| E1  | **Drop MACD zero-cross OR**                      | Remove line 168–169 fallback; keep only `originalBuySignalMacd` (3-bar curl-up)              | Tightens MACD to V2-original semantic.                                                                  |
+| E2  | **Tighten Stoch threshold**                      | Replace `< stochOversold + 10` with `< stochOversold`                                        | Default `< 20`, not `< 30`.                                                                             |
+| E3  | **Remove `ADAPTIVE_CONFIRMATION` mode entirely** | Delete enum value + the OR branch (line 197–201)                                             | One less knob, one fewer escape hatch.                                                                  |
+| E4  | **Multi-bar momentum confirmation**              | Replace single-bar `macdHistogramRising` with `N-of-3-bars rising`                           | Default `>= 2 of last 3`.                                                                               |
+| E5  | **Cooldown after entry / exit**                  | Mirror Ichimoku's `cooldownRemaining` field + tick-down each bar                             | `cooldownBars = 4` (1h M15).                                                                            |
+| E6  | **Volume confirmation**                          | Current bar's volume vs 20-bar SMA                                                           | `volumeConfirmMultiple = 1.0` (skip ghost-volume bars).                                                 |
+| E7  | **Anti-knife-catch RSI lookback**                | Require RSI < `rsiOversoldLong` within last N bars, not just the current bar                 | `requireRsiExtremeWithinBars = 5` per §3.5 mitigant.                                                    |
+| E8  | **Long-side PSAR-distance floor**                | Mirror the short-side `MIN_SHORT_PSAR_DISTANCE_PCT = 0.05` to the long side                  | `psarMinDistanceLongPct = 0.05`.                                                                        |
 | E9  | **Regime gate default**                          | Set `skipMarketRegimes` default to `[STRONG_TREND_HIGH_VOLATILITY, RANGING_HIGH_VOLATILITY]` | `CHOPPY_HIGH_VOLATILITY` is not a platform enum; `RANGING_HIGH_VOLATILITY` is the supported substitute. |
-| E10 | **Switch `trendFilterMode` default to `STRICT`** | SOFT OR's four sub-clauses; STRICT requires all                                             | Default `STRICT`.                                                     |
-| E11 | **Tighten confidence baseline**                  | Drop the 0.46 floor to 0.30; reweight bonuses so the 0.60 threshold actually filters        | Bonus weights tuned so ~30–40% of hard-gated bars fail the threshold. |
+| E10 | **Switch `trendFilterMode` default to `STRICT`** | SOFT OR's four sub-clauses; STRICT requires all                                              | Default `STRICT`.                                                                                       |
+| E11 | **Tighten confidence baseline**                  | Drop the 0.46 floor to 0.30; reweight bonuses so the 0.60 threshold actually filters         | Bonus weights tuned so ~30–40% of hard-gated bars fail the threshold.                                   |
 
 ### 5.2 Exit policy changes
 
-| #   | Change                                | v3 baseline                                   | v4 default                                                       | Reason                                                                                     |
-|-----|---------------------------------------|-----------------------------------------------|------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
-| X1  | Tighten `staleBars`                   | 16 (4h M15)                                   | 12 (3h)                                                          | Eject faster from flat trades.                                                             |
-| X2  | Raise `staleMinR`                     | 0.25                                          | 0.40                                                             | Stop hoping; flush flat trades sooner.                                                     |
-| X3  | Add explicit time-stop emit           | n/a (relies on platform `TradeIntentHorizon`) | Strategy emits `EXIT_LONG/SHORT` at `barsHeld >= maxHoldingBars` | Make exits deterministic, not advisory.                                                    |
-| X4  | Tighten max-holding                   | 64 (16h ≈ 3 sessions)                         | 32 (8h ≈ 1 session)                                              | Reversal/continuation thesis decays within a session.                                      |
-| X5  | Add post-scale weakness exit          | `trailAfterScaleOut` weak (line 350–354)      | Emit explicit exit when post-scale momentum weakens              | Current SPI supports explicit exits, not runtime trailing-stop mutation.                    |
-| X6  | Add fixed target-R exit               | None (only momentum-decay exits)              | `targetRMultiple = 2.5`                                          | Lock-in mechanic; reversal/continuation winners that don't decay cleanly stop giving back. |
-| X7  | `stopMode` default                    | `ATR_OR_PERCENT_MAX`                          | `ATR`                                                            | `_MAX` widens stops unnecessarily.                                                         |
-| X8  | `stopLossPct`                         | 2.0                                           | 1.5                                                              | RELIANCE/HAL bled through 2% stops repeatedly.                                             |
-| X9  | `maxStopPct`                          | 2.5                                           | 2.0                                                              | Cap adaptive stops tighter.                                                                |
-| X10 | `minStopPct`                          | 1.0                                           | 0.6                                                              | Allow tighter when cloud is close.                                                         |
+| #   | Change                       | v3 baseline                                   | v4 default                                                       | Reason                                                                                     |
+|-----|------------------------------|-----------------------------------------------|------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| X1  | Tighten `staleBars`          | 16 (4h M15)                                   | 12 (3h)                                                          | Eject faster from flat trades.                                                             |
+| X2  | Raise `staleMinR`            | 0.25                                          | 0.40                                                             | Stop hoping; flush flat trades sooner.                                                     |
+| X3  | Add explicit time-stop emit  | n/a (relies on platform `TradeIntentHorizon`) | Strategy emits `EXIT_LONG/SHORT` at `barsHeld >= maxHoldingBars` | Make exits deterministic, not advisory.                                                    |
+| X4  | Tighten max-holding          | 64 (16h ≈ 3 sessions)                         | 32 (8h ≈ 1 session)                                              | Reversal/continuation thesis decays within a session.                                      |
+| X5  | Add post-scale weakness exit | `trailAfterScaleOut` weak (line 350–354)      | Emit explicit exit when post-scale momentum weakens              | Current SPI supports explicit exits, not runtime trailing-stop mutation.                   |
+| X6  | Add fixed target-R exit      | None (only momentum-decay exits)              | `targetRMultiple = 2.5`                                          | Lock-in mechanic; reversal/continuation winners that don't decay cleanly stop giving back. |
+| X7  | `stopMode` default           | `ATR_OR_PERCENT_MAX`                          | `ATR`                                                            | `_MAX` widens stops unnecessarily.                                                         |
+| X8  | `stopLossPct`                | 2.0                                           | 1.5                                                              | RELIANCE/HAL bled through 2% stops repeatedly.                                             |
+| X9  | `maxStopPct`                 | 2.5                                           | 2.0                                                              | Cap adaptive stops tighter.                                                                |
+| X10 | `minStopPct`                 | 1.0                                           | 0.6                                                              | Allow tighter when cloud is close.                                                         |
 
 ### 5.3 Lifecycle changes
 
-| #  | Change                                                | Default                                                                                                                                                           |
-|----|-------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| L1 | `maxConsecutiveLosses` circuit-breaker per instrument | Deferred. Needs platform-visible closed-trade outcomes for stop/target/time exits before this can be correct.                                                     |
-| L2 | Tighten scale-out trigger                             | Move from `currentR ≥ 1.0` → `currentR ≥ 1.25`. Avoid scaling out before the trade has earned its keep.                                                           |
-| L3 | Reduce `scaleOutFraction`                             | From `0.50` → `0.40`. Keep more of the runner on.                                                                                                                 |
-| L4 | Break-even after scale-out                            | Deferred. The current SPI does not support mutating the active stop after scale-out; v4 uses explicit exits instead.                                               |
-| L5 | `enableScaleIn` long-side: still off                  | Avoid pyramiding into reversal trades until §3.5 long-side scale-in is validated.                                                                                 |
-| L6 | Reduce `riskFraction`                                 | `0.01 → 0.0075`. Per §3.5, reversal hit-rate ≈ 30–40%; size down.                                                                                                 |
+| #  | Change                                                | Default                                                                                                              |
+|----|-------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| L1 | `maxConsecutiveLosses` circuit-breaker per instrument | Deferred. Needs platform-visible closed-trade outcomes for stop/target/time exits before this can be correct.        |
+| L2 | Tighten scale-out trigger                             | Move from `currentR ≥ 1.0` → `currentR ≥ 1.25`. Avoid scaling out before the trade has earned its keep.              |
+| L3 | Reduce `scaleOutFraction`                             | From `0.50` → `0.40`. Keep more of the runner on.                                                                    |
+| L4 | Break-even after scale-out                            | Deferred. The current SPI does not support mutating the active stop after scale-out; v4 uses explicit exits instead. |
+| L5 | `enableScaleIn` long-side: still off                  | Avoid pyramiding into reversal trades until §3.5 long-side scale-in is validated.                                    |
+| L6 | Reduce `riskFraction`                                 | `0.01 → 0.0075`. Per §3.5, reversal hit-rate ≈ 30–40%; size down.                                                    |
 
 ### 5.4 New parameters introduced
 
@@ -345,25 +361,25 @@ file-backed event calendars need replay-safe platform contracts.
 
 ### 5.6 Defaults summary table — v3 vs v4
 
-| Parameter                 | v3 default                               | v4 default                                               | Rationale                                   |
-|---------------------------|------------------------------------------|----------------------------------------------------------|---------------------------------------------|
-| `adaptiveMomentumMode`    | `STRICT_REVERSAL` (default; mode exists) | **enum removed**                                         | Eliminates the OR-rubber-stamp branch (E3). |
-| `trendFilterMode`         | `SOFT`                                   | `STRICT`                                                 | Stops the four-sub-clause OR (E10).         |
-| `stopMode`                | `ATR_OR_PERCENT_MAX`                     | `ATR`                                                    | Removes the `_MAX` widening (X7).           |
-| `stopLossPct`             | 2.0                                      | 1.5                                                      | X8                                          |
-| `maxStopPct`              | 2.5                                      | 2.0                                                      | X9                                          |
-| `minStopPct`              | 1.0                                      | 0.6                                                      | X10                                         |
-| `staleBars`               | 16                                       | 12                                                       | X1                                          |
-| `staleMinR`               | 0.25                                     | 0.40                                                     | X2                                          |
-| `maxHoldingBars`          | 64                                       | 32                                                       | X4                                          |
-| `riskFraction`            | 0.01                                     | 0.0075                                                   | L6                                          |
-| `scaleOutAtR`             | 1.0                                      | 1.25                                                     | L2                                          |
-| `scaleOutFraction`        | 0.50                                     | 0.40                                                     | L3                                          |
+| Parameter                 | v3 default                               | v4 default                                                | Rationale                                                         |
+|---------------------------|------------------------------------------|-----------------------------------------------------------|-------------------------------------------------------------------|
+| `adaptiveMomentumMode`    | `STRICT_REVERSAL` (default; mode exists) | **enum removed**                                          | Eliminates the OR-rubber-stamp branch (E3).                       |
+| `trendFilterMode`         | `SOFT`                                   | `STRICT`                                                  | Stops the four-sub-clause OR (E10).                               |
+| `stopMode`                | `ATR_OR_PERCENT_MAX`                     | `ATR`                                                     | Removes the `_MAX` widening (X7).                                 |
+| `stopLossPct`             | 2.0                                      | 1.5                                                       | X8                                                                |
+| `maxStopPct`              | 2.5                                      | 2.0                                                       | X9                                                                |
+| `minStopPct`              | 1.0                                      | 0.6                                                       | X10                                                               |
+| `staleBars`               | 16                                       | 12                                                        | X1                                                                |
+| `staleMinR`               | 0.25                                     | 0.40                                                      | X2                                                                |
+| `maxHoldingBars`          | 64                                       | 32                                                        | X4                                                                |
+| `riskFraction`            | 0.01                                     | 0.0075                                                    | L6                                                                |
+| `scaleOutAtR`             | 1.0                                      | 1.25                                                      | L2                                                                |
+| `scaleOutFraction`        | 0.50                                     | 0.40                                                      | L3                                                                |
 | `skipMarketRegimes`       | `[]`                                     | `[STRONG_TREND_HIGH_VOLATILITY, RANGING_HIGH_VOLATILITY]` | E9; `CHOPPY_HIGH_VOLATILITY` is unsupported by the platform enum. |
-| `minConfidence`           | 0.60                                     | 0.60 (kept; baseline + bonus weights re-tuned via E11)   | Threshold finally has teeth.                |
-| `stochOversold + slack`   | `+10` (effective `< 30`)                 | `+0` (`< 20`)                                            | E2                                          |
-| `allowReversal`           | false                                    | false                                                    | No change.                                  |
-| `enableScaleIn` long-side | n/a                                      | n/a (deferred)                                           | L5                                          |
+| `minConfidence`           | 0.60                                     | 0.60 (kept; baseline + bonus weights re-tuned via E11)    | Threshold finally has teeth.                                      |
+| `stochOversold + slack`   | `+10` (effective `< 30`)                 | `+0` (`< 20`)                                             | E2                                                                |
+| `allowReversal`           | false                                    | false                                                     | No change.                                                        |
+| `enableScaleIn` long-side | n/a                                      | n/a (deferred)                                            | L5                                                                |
 
 ### 5.7 Capability flags
 
@@ -395,9 +411,10 @@ Reasons:
    versions present to validate v4 actually outperforms.
 
 Migration: keep v3 provider unchanged. New v4 provider is a fresh
-`*StrategyV4Provider.java` with `STRATEGY_VERSION = "4.0.0"` and `STRATEGY_ID =
-"doflamingo-multi-indicator-v6-trend-reversal-v4"`. V4 owns its helper copies inside
-the new module so v3 helper behavior remains unchanged.
+`*StrategyV4Provider.java`; it initially shipped as `STRATEGY_VERSION = "4.0.0"` and
+the V4.1 default calibration now uses `STRATEGY_VERSION = "4.1.0"` with
+`STRATEGY_ID = "doflamingo-multi-indicator-v6-trend-reversal-v4"`. V4 owns its helper
+copies inside the new module so v3 helper behavior remains unchanged.
 
 ### Module layout
 
@@ -424,7 +441,7 @@ Per `atx-platform-core/docs/strategy-author-guide.md` §1, use the **Fixture loo
 | T4 | All-13-instrument golden runset                                                                            | `stddev(per_instrument_net_return_pct) <= 8.0` (v3 baseline ≈ 12pp); `EvaluationAssertions.assertStrategyOnlyDirectionalHitRateGreaterThan(result, 0.45)` | Per-instrument variance (§1). May need a new helper `assertPerInstrumentReturnSpread(result, maxSpreadPp = 22.0)` in testkit. |
 | T5 | Calibration test on any happy fixture                                                                      | Bucket emitted intents into confidence deciles; assert hit-rate monotonically increases with decile                                                       | Confidence calibration (§4.6, E11).                                                                                           |
 | T6 | Synthetic IST-timestamped bars 09:15–09:30 + 14:30–15:15                                                   | `sessionGating = SKIP_OPENING_15M` produces zero intents before 09:30                                                                                     | Session gating regression (§4.5).                                                                                             |
-| T7 | Synthetic context with `marketContext().primaryRegime = RANGING_HIGH_VOLATILITY`                           | Zero new long entries                                                                                                                                     | Regime gate (E9); platform substitute for planned `CHOPPY_HIGH_VOLATILITY`.                                                    |
+| T7 | Synthetic context with `marketContext().primaryRegime = RANGING_HIGH_VOLATILITY`                           | Zero new long entries                                                                                                                                     | Regime gate (E9); platform substitute for planned `CHOPPY_HIGH_VOLATILITY`.                                                   |
 | T8 | `banknifty-15m-happy-path` (v3 baseline preserved)                                                         | `v4_intentCount <= v3_intentCount` snapshot                                                                                                               | No silent over-emission regression on the canonical fixture. Per `doflamingo-v3-shorting.md` §10.                             |
 | T9 | Any standard fixture                                                                                       | `RecommendationAssertions.assertNoDuplicateRecommendations(result)`                                                                                       | Duplicate-entry-in-position guard.                                                                                            |
 
@@ -446,8 +463,8 @@ once, consumed by both:
 |----------------------------------------|---------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
 | Session gating helper (IST parsing)    | New `DoflamingoSessionGating.java` shared utility | `sessionGating` parameter, default `SKIP_OPENING_15M`                                                                               |
 | F&O expiry calendar lookup             | Platform gap                                      | Not implemented; exact holiday-adjusted expiry needs a platform trading-calendar contract.                                          |
-| `maxConsecutiveLosses` circuit-breaker | Platform gap                                      | Not implemented; strategy hooks do not expose closed-trade outcomes for all platform-managed exits.                                  |
-| Earnings calendar opt-in CSV loader    | Platform gap                                      | Not implemented; file-backed calendars need a replay-safe platform data-source contract.                                             |
+| `maxConsecutiveLosses` circuit-breaker | Platform gap                                      | Not implemented; strategy hooks do not expose closed-trade outcomes for all platform-managed exits.                                 |
+| Earnings calendar opt-in CSV loader    | Platform gap                                      | Not implemented; file-backed calendars need a replay-safe platform data-source contract.                                            |
 | Confidence-baseline recalibration      | Tune per-strategy; pattern is shared              | Drop floor from ~0.46 → ~0.30; reweight bonuses so 30–40% of hard-gated bars fail the threshold                                     |
 | Target-R exit                          | Per-strategy `targetRMultiple` parameter          | Trend Reversal default `2.5`; Ichimoku Momentum default `2.0` (optional — Trend Trading blueprint §3.1 prefers trailing-stop carry) |
 

@@ -273,7 +273,8 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
         boolean chikouClear = !requireChikouClearSpace || DoflamingoIndicatorMath.chikouClearSpace(history, index, true);
         boolean tkFresh = tkCrossFreshBars == 0 || DoflamingoIndicatorMath.tkConfirmationFresh(history, index, tkCrossFreshBars, true);
         double entryAtrFromCloudTop = Math.max(0.0d, close - cloudCeiling) / atr;
-        boolean notOverextended = entryAtrFromCloudTop <= maxEntryAtrFromCloudTop.doubleValue();
+        boolean notOverextended = maxEntryAtrFromCloudTop.signum() <= 0
+                || entryAtrFromCloudTop <= maxEntryAtrFromCloudTop.doubleValue();
         boolean h1BiasOk = htfCloudBiasOk(context, true);
         boolean volumeOk = !earlySetup || DoflamingoIndicatorMath.volumeAtLeastAverageMultiple(history, index, 20, volumeConfirmMultiple.doubleValue());
         boolean atrExpansionOk = !earlySetup || DoflamingoIndicatorMath.atrExpansionAtLeast(history, index, atrPeriod, atrExpansionMultiple.doubleValue());

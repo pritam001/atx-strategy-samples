@@ -32,24 +32,41 @@
 
 ---
 
-## 0. Current Implementation Status And Platform Gaps
+## 0. Regression Status And V4.2 Calibration
+
+**Implementation status (2026-05-17 RunSet `20260517211242`):** V4 shipped with all
+entry gates enabled by default, producing catastrophic over-filtering (-71% trades on
+Ichimoku, -98% on Trend Reversal, -90% / -96% on net return). See
+`doflamingo-v4-regression-rca.md` for the RCA, V4.1 default-relaxation plan, and
+V4.2 split-verdict calibration.
+
+The original strategy-mechanic findings in this doc remain valid; only the default
+on/off decisions were revisited. V4.2 keeps the same strategy id and uses
+momentum-compatible defaults so reversal-flavored gates remain opt-in where they have
+not been A/B validated for this archetype.
+
+## 0.1. Current Implementation Status And Platform Gaps
 
 Implemented module:
 
 - `doflamingo-v4-strategy-packs/`
 - Provider id: `doflamingo-v4-strategy-packs`
 - Strategy id: `doflamingo-ichimoku-mo-002-beta-v4`
-- Strategy version: `4.0.0`
+- Strategy version: `4.2.0`
 - V3 strategy/provider code was not modified.
 
 Implemented within the current strategy SPI:
 
-- H1 context declaration and H1 cloud-bias gate
+- H1 context declaration and configurable H1 cloud-bias gate. The V4.2 default is
+  `OFF`; `ALIGN_WITH_TRADE` remains available as an explicit opt-in.
 - present-cloud thickness, future-cloud spread, future-cloud widening, Chikou
   clear-space, TK freshness, anti-overextension, early-transition volume, ATR
-  expansion, deterministic session gate, and RR target metadata
-- default `skipMarketRegimes` uses `STRONG_TREND_HIGH_VOLATILITY` and
-  `RANGING_HIGH_VOLATILITY`
+  expansion, deterministic session gate, and RR target metadata. V4.2 relaxes Kumo
+  thickness to `0.10`, future spread to `0.05`, TK freshness to `12`, and
+  default-disables anti-overextension with `maxEntryAtrFromCloudTop=0.0`. Future
+  widening, Chikou clear-space, H1 bias, early-transition volume, ATR expansion,
+  session gating, and regime skipping also remain default-off until A/B data supports
+  re-enabling them.
 
 Platform gaps not added to platform:
 
@@ -403,7 +420,10 @@ thresholds with raw-price ones.
 ## 14. Backwards-Compat Decision
 
 **Recommendation: clean break — new strategy ID
-`doflamingo-ichimoku-mo-002-beta-v4`** with `STRATEGY_VERSION = "4.0.0"`.
+`doflamingo-ichimoku-mo-002-beta-v4`**. The initial implementation shipped as
+`STRATEGY_VERSION = "4.0.0"`; the V4.1 default calibration used
+`STRATEGY_VERSION = "4.1.0"`; the split-verdict V4.2 calibration now uses
+`STRATEGY_VERSION = "4.2.0"` with the same strategy id.
 
 Reasons identical to the Trend Reversal v4 plan §6:
 
