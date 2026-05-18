@@ -32,5 +32,6 @@
         <module>doflamingo-v3-strategy-packs</module>
         <module>doflamingo-v4-strategy-packs</module>
         <module>perplexity-strategies</module>
+        <module>trend-pullback-v3-strategy</module>
     </modules>
 </project>
