@@ -353,17 +353,26 @@ provider: atx-strategy-samples
 spi: TradeIntentStrategy
 
 supportedTimeframes:
+  - M1
   - M5
   - M15
 
 preferredTimeframes:
   - M15
 
-requiredContextTimeframes:
-  - H1
+requiredContextTimeframes: []
+optionalContextTimeframes: []
 
-optionalContextTimeframes:
-  - D1
+contextTimeframeRules:
+  - primaryTimeframe: M1
+    contextTimeframe: M5
+    required: true
+  - primaryTimeframe: M5
+    contextTimeframe: M15
+    required: true
+  - primaryTimeframe: M15
+    contextTimeframe: H1
+    required: true
 
 supportedAssetClasses:
   - INDEX
@@ -1099,12 +1108,12 @@ allowOvernight: true
 
 ## B2. Thesis
 
-The swing variant is designed to capture multi-day momentum continuation in liquid Indian equities and, selectively, index futures. It uses daily cloud structure for directional permission and H1/H4 structure for execution. It accepts overnight gap risk only when the higher-timeframe thesis is strong enough and risk is sized smaller than the intraday variant.
+The swing variant is designed to capture multi-day momentum continuation in liquid Indian equities and, selectively, index futures. It uses the selected execution timeframe with a mapped higher-timeframe cloud context for directional permission. It accepts overnight gap risk only when the higher-timeframe thesis is strong enough and risk is sized smaller than the intraday variant.
 
 The swing strategy should be thought of as:
 
 ```text
-Daily structure confirms direction → H1/H4 pullback or breakout triggers entry → hold through multi-day continuation → scale out and trail using cloud/base/Chandelier evidence.
+Mapped context confirms direction → M5/M15/H1 pullback or breakout triggers entry → hold through multi-day continuation → scale out and trail using cloud/base/Chandelier evidence.
 ```
 
 ## B3. SPI choice
@@ -1126,19 +1135,27 @@ provider: atx-strategy-samples
 spi: TradeIntentStrategy
 
 supportedTimeframes:
+  - M5
+  - M15
   - H1
-  - H4
-  - D1
 
 preferredTimeframes:
+  - M15
   - H1
-  - H4
 
-requiredContextTimeframes:
-  - D1
+requiredContextTimeframes: []
+optionalContextTimeframes: []
 
-optionalContextTimeframes:
-  - H4
+contextTimeframeRules:
+  - primaryTimeframe: M5
+    contextTimeframe: M15
+    required: true
+  - primaryTimeframe: M15
+    contextTimeframe: H1
+    required: true
+  - primaryTimeframe: H1
+    contextTimeframe: D1
+    required: true
 
 supportedAssetClasses:
   - EQUITY
@@ -1172,8 +1189,7 @@ ichimokuConversionPeriod: 9
 ichimokuBasePeriod: 26
 ichimokuSpanBPeriod: 52
 ichimokuDisplacement: 26
-dailyCloudBiasMode: REQUIRE_AGREEMENT      # OFF | PREFER_AGREEMENT | REQUIRE_AGREEMENT
-executionCloudMode: H1                     # H1 | H4
+contextCloudBiasMode: REQUIRE_AGREEMENT    # OFF | PREFER_AGREEMENT | REQUIRE_AGREEMENT
 entryMode: HYBRID                          # BREAKOUT | PULLBACK_RESUME | EARLY_TRANSITION | HYBRID
 
 # Trend and momentum
@@ -1252,13 +1268,12 @@ skipMarketRegimes:
 Recommended minimums:
 
 ```text
-H1 primary history: 120 bars
-H4 primary history: 80 bars if H4 is used
-D1 context history: 90 bars
+M5/M15/H1 primary history: 120 bars
+Mapped context history: 90 bars
 Volume history: 25 bars on the execution timeframe
 ```
 
-Swing should not emit trades without D1 context unless `dailyCloudBiasMode = OFF`.
+Swing should not emit trades without its mapped context unless `contextCloudBiasMode = OFF`.
 
 ## B7. Swing universe filters
 
@@ -1289,33 +1304,33 @@ If lot size, circuit limits, exact holidays, or earnings calendars are not expos
 
 ## B8. Swing long setup
 
-### B8.1 Daily permission
+### B8.1 Mapped context permission
 
-If `dailyCloudBiasMode = REQUIRE_AGREEMENT`:
+If `contextCloudBiasMode = REQUIRE_AGREEMENT`:
 
 ```text
-D1 close > D1 cloudTop
-AND D1 futureCloudBias == BULLISH
-AND D1 conversionLine >= D1 baseLine
+context close > context cloudTop
+AND context futureCloudBias == BULLISH
+AND context conversionLine >= context baseLine
 ```
 
-Optional added daily trend confirmation:
+Optional added mapped-context trend confirmation:
 
 ```text
-D1 EMA20 > D1 EMA50
-OR D1 close > D1 SMA200
+context EMA20 > context EMA50
+OR context close > context SMA200
 ```
 
-If `dailyCloudBiasMode = PREFER_AGREEMENT`:
+If `contextCloudBiasMode = PREFER_AGREEMENT`:
 
 ```text
-Use daily alignment as a confidence modifier.
-Block only if D1 close < D1 cloudFloor and D1 future cloud is bearish.
+Use mapped-context alignment as a confidence modifier.
+Block only if context close < context cloudFloor and context future cloud is bearish.
 ```
 
 ### B8.2 Execution timeframe structure
 
-For H1/H4:
+For M5/M15/H1:
 
 ```text
 close > execution cloudTop
@@ -1363,14 +1378,14 @@ D1 is not bearish
 
 Mirror the long setup.
 
-### B9.1 Daily permission
+### B9.1 Mapped context permission
 
-If `dailyCloudBiasMode = REQUIRE_AGREEMENT`:
+If `contextCloudBiasMode = REQUIRE_AGREEMENT`:
 
 ```text
-D1 close < D1 cloudFloor
-AND D1 futureCloudBias == BEARISH
-AND D1 conversionLine <= D1 baseLine
+context close < context cloudFloor
+AND context futureCloudBias == BEARISH
+AND context conversionLine <= context baseLine
 ```
 
 Optional daily trend confirmation:
@@ -1429,16 +1444,10 @@ entryPolicy:
   type: MARKET_NEXT_OPEN
 ```
 
-For H1 execution:
+For M5/M15/H1 execution:
 
 ```text
-Decision at closed H1 bar → entry at next H1 open.
-```
-
-For H4 execution:
-
-```text
-Decision at closed H4 bar → entry at next H4 open.
+Decision at closed primary bar → entry at next primary open.
 ```
 
 Do not simulate entering at the same bar close unless explicitly supported by the evaluation policy.
@@ -1744,8 +1753,8 @@ confidence >= 0.82
 |---|---|---|
 | Strategy ID | `doflamingo-momentum-v5-beta-intraday` | `doflamingo-momentum-v5-beta-swing` |
 | Default horizon | Same-day | Multi-day |
-| Primary timeframe | M15, optional M5 | H1 or H4 |
-| Required context | H1 | D1 |
+| Primary timeframe | M1, M5, M15 | M5, M15, H1 |
+| Required context | M1→M5, M5→M15, M15→H1 | M5→M15, M15→H1, H1→D1 |
 | Overnight | No | Yes |
 | Best instruments | BANKNIFTY, NIFTY, liquid F&O names | Liquid F&O stocks, large caps, selective index futures |
 | Risk fraction | 0.5% | 0.3% |
@@ -1797,6 +1806,7 @@ onBarIntent(context):
   position = context.instrumentPosition()
   history = context.history(primaryTimeframe)
   contextHistory = context.history(requiredContextTimeframe)
+  collectThoughtEvidence = context.collectReasoningEvidence()
 
   if warmup not complete:
     return diagnostic(WARMUP)
@@ -1827,7 +1837,10 @@ onBarIntent(context):
   if chosen confidence >= minConfidence:
     build entry intent with stop, target, sizing, invalidation, evidence
 
-  return StrategyIntentResult(tradeSignals, tradeIntents, diagnostics)
+  if collectThoughtEvidence:
+    attach ThoughtConditionEvidence and currentPhase from the same evaluation
+
+  return StrategyIntentResult(tradeSignals, tradeIntents, diagnostics, optionalThoughtEvidence, optionalCurrentPhase)
 ```
 
 ## D2. Intent priority
@@ -1878,8 +1891,8 @@ Intraday:
   20–50 liquid F&O equities M15, 1–2 years
 
 Swing:
-  50–100 liquid equities H1 + D1 context, 2 years
-  NIFTY / BANKNIFTY H1 + D1 context, 2 years, only if overnight enabled
+  50–100 liquid equities M15/H1 with mapped context, 2 years
+  NIFTY / BANKNIFTY M15/H1 with mapped context, 2 years, only if overnight enabled
 ```
 
 ## F2. Required baselines
@@ -1989,8 +2002,8 @@ Earnings/news shock:
   Mitigation: event blackout when metadata exists; otherwise restrict universe or lower risk.
 
 Sector rotation reversal:
-  Daily cloud remains bullish while flows rotate away.
-  Mitigation: faster H1/H4 momentum decay and D1 baseline exits.
+  Mapped context remains bullish while flows rotate away.
+  Mitigation: faster primary-timeframe momentum decay and context baseline exits.
 
 Illiquid stock behavior:
   Wide gaps and low volume distort ATR/cloud signals.
@@ -2011,7 +2024,7 @@ Too-wide stops:
 3. Add exits: stop, cloud break, PSAR/momentum reversal, stale, max holding, EOD.
 4. Add scale-out and runner exits.
 5. Run M15 index and equity RunSets against V3/V4 baselines.
-6. Implement swing V5 with D1 context, no scale-in.
+6. Implement swing V5 with mapped context, no scale-in.
 7. Add swing event blackout hooks as scenario parameters, not local file reads.
 8. Add optional scale-in only after baseline strategy is stable.
 9. Add Strategy Behavior Analysis evidence samples and indicator usage manifest.
@@ -2066,8 +2079,7 @@ parameters:
 ```yaml
 strategyId: doflamingo-momentum-v5-beta-swing
 parameters:
-  dailyCloudBiasMode: REQUIRE_AGREEMENT
-  executionCloudMode: H1
+  contextCloudBiasMode: REQUIRE_AGREEMENT
   entryMode: PULLBACK_RESUME
   riskFraction: 0.0025
   initialAtrStopMultiple: 2.0
@@ -2085,8 +2097,7 @@ parameters:
 ```yaml
 strategyId: doflamingo-momentum-v5-beta-swing
 parameters:
-  dailyCloudBiasMode: PREFER_AGREEMENT
-  executionCloudMode: H1
+  contextCloudBiasMode: PREFER_AGREEMENT
   entryMode: HYBRID
   riskFraction: 0.0035
   initialAtrStopMultiple: 1.7
@@ -2107,12 +2118,12 @@ Ship both as beta strategies, but validate them separately:
 
 ```text
 doflamingo-momentum-v5-beta-intraday:
-  Primary use: same-day M15 momentum on indices and liquid F&O names.
-  Default: no overnight, H1 context required, no scale-in.
+  Primary use: same-day M1/M5/M15 momentum on indices and liquid F&O names.
+  Default: no overnight, mapped context required, no scale-in.
 
 Doflamingo-momentum-v5-beta-swing:
-  Primary use: H1/H4 execution in D1 trend for liquid equities.
-  Default: overnight allowed, smaller risk, wider stops, D1 context required, no scale-in.
+  Primary use: M5/M15/H1 execution with mapped higher-timeframe trend for liquid equities.
+  Default: overnight allowed, smaller risk, wider stops, mapped context required, no scale-in.
 ```
 
 The most important implementation principle is this:

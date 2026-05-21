@@ -31,6 +31,7 @@
         <module>ema-trend-structure-pullback-strategy</module>
         <module>doflamingo-v3-strategy-packs</module>
         <module>doflamingo-v4-strategy-packs</module>
+        <module>doflamingo-v5-strategy-packs</module>
         <module>perplexity-strategies</module>
         <module>trend-pullback-v3-strategy</module>
     </modules>
