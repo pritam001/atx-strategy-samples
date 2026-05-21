@@ -4,11 +4,16 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
 import org.algotradex.platform.core.api.dto.common.indicator.StrategyChartStudy;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
@@ -73,7 +78,7 @@ public final class DoflamingoIchimokuMo002BetaV4StrategyProvider implements Stra
     static final String VOLUME_CONFIRM_MULTIPLE = "volumeConfirmMultiple";
     static final String ATR_EXPANSION_MULTIPLE = "atrExpansionMultiple";
 
-    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
+    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(withResumePolicies(List.of(
             new StrategyParameterDefinition(ENTRY_MODE, StrategyParameterType.ENUM, "Entry Mode",
                     "Adaptive Doflamingo v4 entry mode.",
                     true, "HYBRID", null, null, List.of("STRICT_BETA", "EARLY_TRANSITION", "HYBRID")),
@@ -179,7 +184,7 @@ public final class DoflamingoIchimokuMo002BetaV4StrategyProvider implements Stra
             new StrategyParameterDefinition(SHORT_SCALE_OUT_FRACTION, StrategyParameterType.DECIMAL, "Short Scale Out Fraction",
                     "Open-position fraction requested by short scale-out intents.",
                     true, BigDecimal.valueOf(0.50), BigDecimal.valueOf(0.01), BigDecimal.ONE, List.of())
-    ));
+    )));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
@@ -211,7 +216,8 @@ public final class DoflamingoIchimokuMo002BetaV4StrategyProvider implements Stra
                     DoflamingoChartStudies.sma(200, "trend-score-component", false),
                     DoflamingoChartStudies.unsupported("trend-score", "Trend Score", "trend-acceleration-filter", Map.of("lookback", 10), false),
                     DoflamingoChartStudies.unsupported("atr", "ATR", "protective-stop-context", Map.of("period", 14), false)
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -293,5 +299,69 @@ public final class DoflamingoIchimokuMo002BetaV4StrategyProvider implements Stra
                 effective.decimal(SHORT_SCALE_OUT_AT_R, BigDecimal.valueOf(1.00)),
                 effective.decimal(SHORT_SCALE_OUT_FRACTION, BigDecimal.valueOf(0.50))
         );
+    }
+
+    private static List<StrategyParameterDefinition> withResumePolicies(List<StrategyParameterDefinition> definitions) {
+        return definitions.stream()
+                .map(definition -> new StrategyParameterDefinition(
+                        definition.key(),
+                        definition.type(),
+                        definition.label(),
+                        definition.description(),
+                        definition.required(),
+                        definition.defaultValue(),
+                        definition.min(),
+                        definition.max(),
+                        definition.allowedValues(),
+                        resumePolicy(definition.key())
+                ))
+                .toList();
+    }
+
+    private static StrategyParameterResumePolicy resumePolicy(String key) {
+        return switch (key) {
+            case TREND_AVERAGE_LOOKBACK -> StrategyParameterResumePolicy.lookback(10);
+            case ATR_PERIOD -> StrategyParameterResumePolicy.lookback(14);
+            case TK_CROSS_FRESH_BARS -> StrategyParameterResumePolicy.lookback(12);
+            case ENTRY_MODE, MIN_CONFIDENCE, MIN_KUMO_THICKNESS_ATR, MIN_FUTURE_CLOUD_SPREAD_ATR,
+                    REQUIRE_FUTURE_CLOUD_WIDENING, REQUIRE_CHIKOU_CLEAR_SPACE,
+                    MAX_ENTRY_ATR_FROM_CLOUD_TOP, HTF_CLOUD_BIAS_MODE, VOLUME_CONFIRM_MULTIPLE,
+                    ATR_EXPANSION_MULTIPLE, SKIP_MARKET_REGIMES, ALLOW_SHORTS,
+                    SHORT_CLOUD_PRICE_MODE, SHORT_EMA_CLOUD_MODE, SESSION_GATING ->
+                    StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.forwardOnly();
+        };
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                "doflamingo-ichimoku-mo-002-beta-v4-reasoning-v1",
+                "Trade Ichimoku continuation only when cloud structure, momentum, optional HTF bias, regime/session gates, and lifecycle risk agree.",
+                "Doflamingo Ichimoku v4 checks cloud quality, momentum, trend bias, regime skips, session gates, and lifecycle risk.",
+                List.of(
+                        phase("cloud", "Cloud", "Check present and future cloud quality before looking for continuation."),
+                        phase("momentum", "Momentum", "Confirm Tenkan/Kijun, EMA, breakout, ATR, and volume momentum."),
+                        phase("filters", "Filters", "Apply higher-timeframe, market-regime, and session gates."),
+                        phase("risk", "Risk", "Enforce entry distance, cooldown, stop, reversal, and scale/exit controls.")
+                ),
+                List.of(
+                        condition("cloud-quality", "Cloud quality", ConditionRole.REGIME_FILTER, true, "cloud", "Avoid thin, narrowing, or ambiguous clouds that do not support continuation."),
+                        condition("momentum", "Momentum confirmation", ConditionRole.ENTRY_TRIGGER, true, "momentum", "Require current bar momentum to confirm the cloud setup."),
+                        condition("trend-bias", "Higher-timeframe cloud bias", ConditionRole.ENTRY_FILTER, false, "filters", "Explain whether optional higher-timeframe cloud bias agrees with the entry."),
+                        condition("regime-skip", "Market regime skip", ConditionRole.REGIME_FILTER, false, "filters", "Block entries in configured market regimes."),
+                        condition("session-gate", "Session gate", ConditionRole.ENTRY_FILTER, false, "filters", "Block entries outside configured trading sessions."),
+                        condition("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD, true, "risk", "Avoid entries during cooldown or when risk distance and lifecycle controls are invalid.")
+                )
+        );
+    }
+
+    private static ReasoningPhaseDescriptor phase(String id, String label, String description) {
+        return new ReasoningPhaseDescriptor(id, label, description);
+    }
+
+    private static ReasoningConditionDescriptor condition(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed.",
+                label + " blocked the setup.");
     }
 }

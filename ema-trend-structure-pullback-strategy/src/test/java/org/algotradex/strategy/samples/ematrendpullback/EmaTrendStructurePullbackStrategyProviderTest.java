@@ -17,16 +17,22 @@ import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.contracts.market.OHLCV;
+import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextSnapshot;
+import org.algotradex.platform.core.api.dto.common.replay.MarketDataVisibilitySnapshot;
 import org.algotradex.platform.core.api.dto.common.replay.ReplayRunMetadata;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyPortfolioState;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyStateEnvelope;
 import org.algotradex.platform.core.api.enums.replay.ReplayMode;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
+import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
+import org.algotradex.platform.core.strategy.simulation.SimulationStepper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -218,6 +224,54 @@ class EmaTrendStructurePullbackStrategyProviderTest {
                         "ema-v2.confidence-threshold"
                 );
         assertThat(intent.confidence().value()).isGreaterThanOrEqualTo(new BigDecimal("0.7000"));
+    }
+
+    @Test
+    void resumableStateMatchesFreshReplayAcrossCheckpoint() {
+        List<BarEvent> bars = bullishPullbackBars();
+        int checkpointIndex = Math.max(1, bars.size() / 2);
+        TradeIntentStrategy original = compactStrategy(Map.of());
+        replayUntil(original, bars, checkpointIndex);
+        ResumableStrategy originalState = (ResumableStrategy) original;
+        StrategyStateEnvelope checkpoint = originalState.initialState(
+                EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                "variant-a",
+                new StrategyParameters(compactParameters(Map.of()))
+        );
+
+        TradeIntentStrategy restored = compactStrategy(Map.of());
+        ((ResumableStrategy) restored).resumeFromState(originalState.serialise(checkpoint));
+        StrategyIntentResult restoredFinal = replayRange(restored, bars, checkpointIndex, bars.size());
+
+        TradeIntentStrategy fresh = compactStrategy(Map.of());
+        StrategyIntentResult freshFinal = replayRange(fresh, bars, 0, bars.size());
+
+        assertThat(restoredFinal).usingRecursiveComparison().isEqualTo(freshFinal);
+        assertThat(((ResumableStrategy) restored).snapshotState()).isEqualTo(((ResumableStrategy) fresh).snapshotState());
+    }
+
+    @Test
+    void simulationStepperStateMatchesFreshReplayAcrossSerializedCheckpoint() {
+        List<BarEvent> bars = bullishPullbackBars();
+        int checkpointIndex = Math.max(1, bars.size() / 2);
+        StrategyParameters parameters = new StrategyParameters(compactParameters(Map.of()));
+
+        SimulationStepper checkpointed = stepper(parameters);
+        for (int index = 0; index < checkpointIndex; index++) {
+            checkpointed.step(bars.get(index), MarketDataVisibilitySnapshot.empty(), MarketContextSnapshot.empty());
+        }
+        StrategyStateEnvelope checkpoint = checkpointed.checkpoint("variant-a");
+
+        SimulationStepper restored = stepper(parameters);
+        restored.resumeFromSerialised(checkpointed.serialise(checkpoint), parameters);
+        var restoredFinal = stepRange(restored, bars, checkpointIndex, bars.size());
+
+        SimulationStepper fresh = stepper(parameters);
+        var freshFinal = stepRange(fresh, bars, 0, bars.size());
+
+        assertThat(restoredFinal.result()).usingRecursiveComparison().isEqualTo(freshFinal.result());
+        assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
+        assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
     }
 
     @Test
@@ -509,6 +563,30 @@ class EmaTrendStructurePullbackStrategyProviderTest {
         return (TradeIntentStrategy) provider.create(new StrategyParameters(compactParameters(overrides)), null);
     }
 
+    private SimulationStepper stepper(StrategyParameters parameters) {
+        return new SimulationStepper(
+                List.of((TradeSignalStrategy) provider.create(parameters, null)),
+                METADATA,
+                256,
+                java.time.Clock.systemUTC(),
+                EmaTrendStructurePullbackStrategyProvider.STRATEGY_VERSION,
+                parameters
+        );
+    }
+
+    private static org.algotradex.platform.core.strategy.simulation.SimulationStepResult stepRange(
+            SimulationStepper stepper,
+            List<BarEvent> bars,
+            int start,
+            int endExclusive
+    ) {
+        org.algotradex.platform.core.strategy.simulation.SimulationStepResult result = null;
+        for (int index = start; index < endExclusive; index++) {
+            result = stepper.step(bars.get(index), MarketDataVisibilitySnapshot.empty(), MarketContextSnapshot.empty());
+        }
+        return result;
+    }
+
     private static Map<String, Object> compactParameters(Map<String, Object> overrides) {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("fastEmaPeriod", 3);
@@ -569,6 +647,18 @@ class EmaTrendStructurePullbackStrategyProviderTest {
             }
         }
         return null;
+    }
+
+    private static void replayUntil(TradeIntentStrategy strategy, List<BarEvent> bars, int endExclusive) {
+        replayRange(strategy, bars, 0, endExclusive);
+    }
+
+    private static StrategyIntentResult replayRange(TradeIntentStrategy strategy, List<BarEvent> bars, int start, int endExclusive) {
+        StrategyIntentResult result = StrategyIntentResult.empty();
+        for (int index = start + 1; index <= endExclusive; index++) {
+            result = strategy.onBarIntent(context(bars.subList(0, index)));
+        }
+        return result;
     }
 
     private static List<TradeSignal> replaySignals(TradeIntentStrategy strategy, List<BarEvent> bars) {

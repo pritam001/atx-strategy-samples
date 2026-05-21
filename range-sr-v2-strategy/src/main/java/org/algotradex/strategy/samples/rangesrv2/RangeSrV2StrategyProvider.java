@@ -5,10 +5,15 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
@@ -54,7 +59,7 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
 
     private static final String INDICATOR_FORMULA_VERSION = "atx-indicator-formula-v1";
 
-    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
+    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(withResumePolicies(List.of(
             decimal(MIN_TREND_ADX, "Minimum H4 ADX", "Minimum ADX(14) required on H4 before trading.", "20", "1", "80"),
             decimal(MIN_PATTERN_CONFIDENCE, "Minimum Pattern Confidence", "Minimum reversal-pattern confidence; 1.0 keeps strict Tier-1 patterns.", "1.0", "0.5", "1.0"),
             integer(MIN_CONFLUENCE, "Minimum Confluence", "Minimum defended-level confluence factors required.", 2, 1, 4),
@@ -68,7 +73,7 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
             integer(COOLDOWN_HOURS, "Cooldown Hours", "Per-instrument setup cooldown after a signal.", 4, 0, 72),
             decimal(LEVEL_TOLERANCE_PCT, "Level Tolerance %", "Fractional proximity tolerance for levels, round numbers, and fibs.", "0.002", "0.0001", "0.05"),
             decimal(MIDLINE_TOLERANCE_PCT, "Midline Tolerance %", "Neutral band around the active range midline.", "0.02", "0.0", "0.20")
-    ));
+    )));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
@@ -94,7 +99,8 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
                     study("ema", "EMA", "h4-ema50-trend", Map.of("period", 50, "timeframe", "H4"), true),
                     study("atr", "ATR", "execution-stop-buffer", Map.of("period", 14, "timeframe", "PRIMARY"), true),
                     study("fractal-pivots", "Fractal Pivots", "structure-levels", Map.of("lookback", 3, "timeframe", "H4"), true)
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -170,6 +176,64 @@ public final class RangeSrV2StrategyProvider implements StrategyProvider {
     private static StrategyParameterDefinition bool(String key, String label, String description, boolean defaultValue) {
         return new StrategyParameterDefinition(key, StrategyParameterType.BOOLEAN, label, description, true,
                 defaultValue, null, null, List.of());
+    }
+
+    private static List<StrategyParameterDefinition> withResumePolicies(List<StrategyParameterDefinition> definitions) {
+        return definitions.stream()
+                .map(definition -> new StrategyParameterDefinition(
+                        definition.key(),
+                        definition.type(),
+                        definition.label(),
+                        definition.description(),
+                        definition.required(),
+                        definition.defaultValue(),
+                        definition.min(),
+                        definition.max(),
+                        definition.allowedValues(),
+                        resumePolicy(definition.key())
+                ))
+                .toList();
+    }
+
+    private static StrategyParameterResumePolicy resumePolicy(String key) {
+        return switch (key) {
+            case HTF_LOOKBACK, LTF_LOOKBACK -> StrategyParameterResumePolicy.lookback(200);
+            case PIVOT_LOOKBACK -> StrategyParameterResumePolicy.lookback(7);
+            case MIN_TREND_ADX, MIN_PATTERN_CONFIDENCE, MIN_CONFLUENCE, LEVEL_TOLERANCE_PCT, MIDLINE_TOLERANCE_PCT ->
+                    StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.forwardOnly();
+        };
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                "range-sr-v2-reasoning-v1",
+                "Trade only when trend strength, range location, defended structure, trigger quality, and real target distance all align.",
+                "Range S/R checks H4 trend, defended zone, confluence, pattern, and reward/risk.",
+                List.of(
+                        phase("regime", "Regime", "Confirm the H4 backdrop is strong enough to trade a range edge."),
+                        phase("location", "Location", "Find a defended support/resistance zone in the correct half of the range."),
+                        phase("trigger", "Trigger", "Wait for lower-timeframe rejection evidence at the defended level."),
+                        phase("risk", "Risk", "Require a real structure target beyond the minimum reward/risk.")
+                ),
+                List.of(
+                        condition("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, true, "regime", "Avoid trading weak or noisy H4 structure."),
+                        condition("zone-match", "Defended support/resistance zone", ConditionRole.ENTRY_FILTER, true, "location", "Ensure longs come from discount support and shorts from premium resistance."),
+                        condition("confluence", "Structure confluence", ConditionRole.ENTRY_FILTER, true, "location", "Prefer levels defended by pivots, round numbers, fibs, or recent extremes."),
+                        condition("pattern", "Reversal pattern", ConditionRole.ENTRY_TRIGGER, true, "trigger", "Require lower-timeframe rejection before emitting an entry."),
+                        condition("rr", "Reward/risk", ConditionRole.RISK_GUARD, true, "risk", "Reject setups without a real structure target at the required R multiple.")
+                )
+        );
+    }
+
+    private static ReasoningPhaseDescriptor phase(String id, String label, String description) {
+        return new ReasoningPhaseDescriptor(id, label, description);
+    }
+
+    private static ReasoningConditionDescriptor condition(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed.",
+                label + " blocked the setup.");
     }
 
     private static StrategyChartStudy study(String indicatorId, String displayName, String role, Map<String, Object> parameters, boolean required) {

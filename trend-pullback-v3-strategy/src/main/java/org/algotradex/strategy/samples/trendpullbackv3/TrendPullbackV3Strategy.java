@@ -28,9 +28,13 @@ import org.algotradex.platform.contracts.intelligence.TradeIntentPreconditions;
 import org.algotradex.platform.contracts.intelligence.TradeIntentSizing;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
 import java.math.BigDecimal;
@@ -76,7 +80,7 @@ import static java.util.Objects.requireNonNull;
  * slippage, or portfolio accounting. The {@code riskUsdPerTrade} parameter is sample sizing input
  * for intent metadata, not a broker-side risk guarantee.
  */
-public final class TrendPullbackV3Strategy implements TradeIntentStrategy {
+public final class TrendPullbackV3Strategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final MathContext MC = MathContext.DECIMAL64;
     private static final int ADX_PERIOD = 14;
     private static final int EMA_PERIOD = 50;
@@ -99,6 +103,46 @@ public final class TrendPullbackV3Strategy implements TradeIntentStrategy {
     }
 
     @Override
+    public String stateSchemaVersion() {
+        return "trend-pullback-v3-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "cooldownUntilByInstrument", Map.copyOf(cooldownUntilByInstrument),
+                "lastSignalConfluenceByInstrument", Map.copyOf(lastSignalConfluenceByInstrument)
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        cooldownUntilByInstrument.clear();
+        lastSignalConfluenceByInstrument.clear();
+        Object cooldowns = state == null ? null : state.get("cooldownUntilByInstrument");
+        if (cooldowns instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> {
+                if (key != null && value != null) {
+                    cooldownUntilByInstrument.put(key.toString(), instant(value));
+                }
+            });
+        }
+        Object confluence = state == null ? null : state.get("lastSignalConfluenceByInstrument");
+        if (confluence instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> {
+                if (key != null && value instanceof Number number) {
+                    lastSignalConfluenceByInstrument.put(key.toString(), number.intValue());
+                }
+            });
+        }
+    }
+
+    @Override
+    public Map<String, Object> mergeRewarmedState(Map<String, Object> checkpointState, Map<String, Object> rewarmedState) {
+        return Map.copyOf(checkpointState == null ? Map.of() : checkpointState);
+    }
+
+    @Override
     public List<StrategyCapability> lifecycleCapabilities() {
         return List.of(
                 StrategyCapability.LONG_SIGNALS,
@@ -109,6 +153,10 @@ public final class TrendPullbackV3Strategy implements TradeIntentStrategy {
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
+    }
+
+    private static Instant instant(Object value) {
+        return value instanceof Instant instant ? instant : Instant.parse(value.toString());
     }
 
     @Override
@@ -157,6 +205,52 @@ public final class TrendPullbackV3Strategy implements TradeIntentStrategy {
                 ? List.of("accept:" + accepted.side().name().toLowerCase(Locale.ROOT) + ":conf-" + accepted.confluence())
                 : List.of();
         return new StrategyIntentResult(List.of(signal), List.of(intent), diagnostics);
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        BarEvent current = context.currentBar();
+        String executionTimeframe = executionTimeframe(current);
+        List<BarEvent> executionBars = last(context.history(executionTimeframe), params.ltfLookback());
+        List<BarEvent> bars4h = last(context.history("H4"), params.htfLookback());
+        if (executionBars.size() < 20 || bars4h.size() < 50) {
+            return List.of(
+                    numericEvidence("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, false,
+                            "bars4h", BigDecimal.valueOf(bars4h.size()), ">=", "requiredBars", BigDecimal.valueOf(50),
+                            "Need at least 50 H4 bars before trend strength is reliable."),
+                    numericEvidence("pullback-pattern", "Pullback pattern", ConditionRole.ENTRY_TRIGGER, false,
+                            "executionBars", BigDecimal.valueOf(executionBars.size()), ">=", "requiredBars", BigDecimal.valueOf(20),
+                            "Need at least 20 execution bars before pullback pattern checks run.")
+            );
+        }
+        Evaluation evaluation = evaluate(current, bars4h, executionBars, executionTimeframe);
+        if (evaluation.setup().isPresent()) {
+            Setup accepted = evaluation.setup().get();
+            return List.of(
+                    numericEvidence("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, true,
+                            "adx4h", accepted.adx4h(), ">=", "minTrendAdx", params.minTrendAdx(),
+                            "H4 trend strength passed."),
+                    new ThoughtConditionEvidence("pivot-source", "Pivot source context", ConditionRole.ENTRY_FILTER, true,
+                            "Pivot source " + params.pivotSource() + " produced a defended " + accepted.position() + " zone."),
+                    numericEvidence("pullback-pattern", "Pullback pattern", ConditionRole.ENTRY_TRIGGER, true,
+                            "patternConfidence", accepted.pattern().confidence(), ">=", "minPatternConfidence", params.minPatternConfidence(),
+                            accepted.pattern().type() + " confirms the pullback."),
+                    numericEvidence("confluence", "Structure confluence", ConditionRole.ENTRY_FILTER, true,
+                            "confluence", BigDecimal.valueOf(accepted.confluence()), ">=", "minConfluence", BigDecimal.valueOf(params.minConfluence()),
+                            "Defended level has enough confluence."),
+                    new ThoughtConditionEvidence("tolerance", "Adaptive level tolerance", ConditionRole.ENTRY_FILTER, true,
+                            params.volatilityAdaptiveTolerance() ? "ATR-scaled tolerance accepted the level touch." : "Fixed tolerance accepted the level touch."),
+                    numericEvidence("rr", "Reward/risk", ConditionRole.RISK_GUARD, true,
+                            "rr", accepted.rr(), ">=", "minRR", params.atrMultMinRR(),
+                            "Nearest real structure target satisfies the reward/risk requirement.")
+            );
+        }
+        String blockedId = conditionIdForRejection(evaluation.rejectionCode());
+        return List.of(
+                new ThoughtConditionEvidence(blockedId, labelForCondition(blockedId), roleForCondition(blockedId), false,
+                        evaluation.rejectionCode() + " " + evaluation.rejectionDetail())
+        );
     }
 
     private StrategyIntentResult diagnosticsOnly(String code, String detail) {
@@ -543,6 +637,74 @@ public final class TrendPullbackV3Strategy implements TradeIntentStrategy {
     ) {
         String message = leftName + "=" + decimal(leftValue).toPlainString() + " " + operator + " " + rightName + "=" + decimal(rightValue).toPlainString();
         return new StrategyTradeIntentConditionEvidence(id, label, leftName, decimal(leftValue), operator, rightName, decimal(rightValue), passed, message);
+    }
+
+    private static ThoughtConditionEvidence numericEvidence(
+            String id,
+            String label,
+            ConditionRole role,
+            boolean passed,
+            String leftName,
+            BigDecimal leftValue,
+            String operator,
+            String rightName,
+            BigDecimal rightValue,
+            String message
+    ) {
+        BigDecimal left = decimal(leftValue);
+        BigDecimal right = decimal(rightValue);
+        BigDecimal distance = passed ? null : right.subtract(left, MC).abs();
+        return new ThoughtConditionEvidence(id, label, role, passed, leftName, left, operator, rightName, right, distance, message);
+    }
+
+    private static String conditionIdForRejection(String code) {
+        if (code == null) {
+            return "pullback-pattern";
+        }
+        if (code.contains("adx") || code.contains("ema50")) {
+            return "h4-trend";
+        }
+        if (code.contains("pivot") || code.contains("zone")) {
+            return "pivot-source";
+        }
+        if (code.contains("confluence")) {
+            return "confluence";
+        }
+        if (code.contains("level") || code.contains("tolerance")) {
+            return "tolerance";
+        }
+        if (code.contains("pattern") || code.contains("overshoot")) {
+            return "pullback-pattern";
+        }
+        if (code.contains("target") || code.contains("risk") || code.contains("atr")) {
+            return "rr";
+        }
+        if (code.contains("cooldown")) {
+            return "cooldown";
+        }
+        return "pullback-pattern";
+    }
+
+    private static String labelForCondition(String conditionId) {
+        return switch (conditionId) {
+            case "h4-trend" -> "H4 trend strength";
+            case "pivot-source" -> "Pivot source context";
+            case "confluence" -> "Structure confluence";
+            case "tolerance" -> "Adaptive level tolerance";
+            case "rr" -> "Reward/risk";
+            case "cooldown" -> "Cooldown";
+            default -> "Pullback pattern";
+        };
+    }
+
+    private static ConditionRole roleForCondition(String conditionId) {
+        return switch (conditionId) {
+            case "h4-trend" -> ConditionRole.REGIME_FILTER;
+            case "rr" -> ConditionRole.RISK_GUARD;
+            case "cooldown" -> ConditionRole.POSITION_CONTEXT;
+            case "pullback-pattern" -> ConditionRole.ENTRY_TRIGGER;
+            default -> ConditionRole.ENTRY_FILTER;
+        };
     }
 
     private static StrategyTradeIntentConditionEvidence condition(

@@ -5,10 +5,15 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
@@ -73,7 +78,7 @@ public final class TrendPullbackV3StrategyProvider implements StrategyProvider {
     // PR-S8: allow second-touch within cooldown if confluence is strictly higher.
     // PR-S9: allow MIDLINE-zone entries when confluence == 4 (compensates for relaxed zone gate).
     // PR-S6: emit per-rejection diagnostics by default so failed-run analysis surfaces in the UI.
-    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
+    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(withResumePolicies(List.of(
             decimal(MIN_TREND_ADX, "Minimum H4 ADX",
                     "Minimum ADX(14) required on H4 before trading. v3 lowers from 20 to 15 to open ADX-15-to-20 instruments.",
                     "15", "1", "80"),
@@ -121,7 +126,7 @@ public final class TrendPullbackV3StrategyProvider implements StrategyProvider {
             bool(EMIT_DIAGNOSTICS, "Emit Diagnostics",
                     "When true, every rejecting evaluation emits a diagnostics line in StrategyIntentResult so the RunSet UI can show why an instrument didn't trade.",
                     true)
-    ));
+    )));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
@@ -147,7 +152,8 @@ public final class TrendPullbackV3StrategyProvider implements StrategyProvider {
                     study("ema", "EMA", "h4-ema50-trend", Map.of("period", 50, "timeframe", "H4"), true),
                     study("atr", "ATR", "execution-stop-buffer", Map.of("period", 14, "timeframe", "PRIMARY"), true),
                     study("fractal-pivots", "Fractal Pivots", "structure-levels", Map.of("lookback", 3, "timeframe", "HYBRID"), true)
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -265,6 +271,68 @@ public final class TrendPullbackV3StrategyProvider implements StrategyProvider {
     private static StrategyParameterDefinition enumeration(String key, String label, String description, String defaultValue, List<String> allowed) {
         return new StrategyParameterDefinition(key, StrategyParameterType.ENUM, label, description, true,
                 defaultValue, null, null, allowed);
+    }
+
+    private static List<StrategyParameterDefinition> withResumePolicies(List<StrategyParameterDefinition> definitions) {
+        return definitions.stream()
+                .map(definition -> new StrategyParameterDefinition(
+                        definition.key(),
+                        definition.type(),
+                        definition.label(),
+                        definition.description(),
+                        definition.required(),
+                        definition.defaultValue(),
+                        definition.min(),
+                        definition.max(),
+                        definition.allowedValues(),
+                        resumePolicy(definition.key())
+                ))
+                .toList();
+    }
+
+    private static StrategyParameterResumePolicy resumePolicy(String key) {
+        return switch (key) {
+            case HTF_LOOKBACK, LTF_LOOKBACK -> StrategyParameterResumePolicy.lookback(200);
+            case PIVOT_LOOKBACK -> StrategyParameterResumePolicy.lookback(7);
+            case MIN_TREND_ADX, PATTERN_TIER, MIN_CONFLUENCE, PIVOT_SOURCE, LEVEL_TOLERANCE_PCT,
+                    MIDLINE_TOLERANCE_PCT, VOLATILITY_ADAPTIVE_TOLERANCE, ADAPTIVE_TOLERANCE_MIN,
+                    ADAPTIVE_TOLERANCE_MAX, ALLOW_MIDLINE_WITH_MAX_CONFLUENCE,
+                    TIER2_WITH_MAX_CONFLUENCE_COUNTS_AS_TIER1 ->
+                    StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.forwardOnly();
+        };
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                "trend-pullback-v3-reasoning-v1",
+                "Trade pullbacks only when the H4 trend, selected pivot source, level touch, pattern tier, and target distance are coherent.",
+                "Trend Pullback v3 checks H4 trend, pivot source, pullback pattern, confluence, tolerance, and reward/risk.",
+                List.of(
+                        phase("regime", "Regime", "Qualify the higher-timeframe trend before looking for a pullback."),
+                        phase("structure", "Structure", "Choose the pivot source and defended level that define the pullback zone."),
+                        phase("trigger", "Trigger", "Confirm the bar touched the defended level and printed an acceptable reversal pattern."),
+                        phase("risk", "Risk", "Require enough structural target distance for the configured reward/risk.")
+                ),
+                List.of(
+                        condition("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, true, "regime", "Avoid counter-trend pullbacks in weak trend regimes."),
+                        condition("pivot-source", "Pivot source context", ConditionRole.ENTRY_FILTER, true, "structure", "Anchor the zone to the configured HTF, LTF, or hybrid pivot source."),
+                        condition("pullback-pattern", "Pullback pattern", ConditionRole.ENTRY_TRIGGER, true, "trigger", "Require a reversal pattern at the defended level before entering."),
+                        condition("confluence", "Structure confluence", ConditionRole.ENTRY_FILTER, true, "structure", "Prefer defended levels with multiple independent confirmations."),
+                        condition("tolerance", "Adaptive level tolerance", ConditionRole.ENTRY_FILTER, false, "trigger", "Explain whether fixed or ATR-scaled tolerance made the level touch valid."),
+                        condition("rr", "Reward/risk", ConditionRole.RISK_GUARD, true, "risk", "Reject setups whose next real pivot cannot pay the configured R multiple.")
+                )
+        );
+    }
+
+    private static ReasoningPhaseDescriptor phase(String id, String label, String description) {
+        return new ReasoningPhaseDescriptor(id, label, description);
+    }
+
+    private static ReasoningConditionDescriptor condition(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed.",
+                label + " blocked the setup.");
     }
 
     private static StrategyChartStudy study(String indicatorId, String displayName, String role, Map<String, Object> parameters, boolean required) {

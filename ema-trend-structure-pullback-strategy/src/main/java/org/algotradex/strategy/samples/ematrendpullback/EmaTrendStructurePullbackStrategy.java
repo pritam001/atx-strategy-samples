@@ -15,10 +15,14 @@ import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
 import org.algotradex.platform.contracts.intelligence.TradeIntentExitPolicy;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
 import java.math.BigDecimal;
@@ -28,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
@@ -50,7 +55,7 @@ import static java.util.Objects.requireNonNull;
  * requests, reserve capital, compute portfolio-level exposure, or guarantee that downstream runtime
  * accepts any emitted lifecycle intent.
  */
-public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrategy {
+public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final double IDEAL_DISTANCE_FROM_FAST_EMA_MIN_PCT = 0.10d;
     private static final double TRANSITION_MAX_DISTANCE_FROM_FAST_EMA_PCT = 2.50d;
 
@@ -66,6 +71,27 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
     @Override
     public String strategyId() {
         return EmaTrendStructurePullbackStrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "ema-trend-structure-pullback-v2-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "processedBars", processedBars,
+                "longRuntime", sideRuntimeState(longRuntime),
+                "shortRuntime", sideRuntimeState(shortRuntime)
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        processedBars = asInt(state == null ? null : state.get("processedBars"), 0);
+        restoreSideRuntime(longRuntime, state == null ? null : state.get("longRuntime"));
+        restoreSideRuntime(shortRuntime, state == null ? null : state.get("shortRuntime"));
     }
 
     @Override
@@ -144,6 +170,66 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                 entryReason(candidate, stop, adjustedConfidence)
         );
         return new StrategyIntentResult(List.of(signal), List.of(intent), List.of());
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        if (history.isEmpty()) {
+            return List.of(new ThoughtConditionEvidence("ema-stack", "EMA stack alignment", ConditionRole.REGIME_FILTER, false,
+                    "No primary history is available yet."));
+        }
+        EmaSeries series = EmaSeries.from(history, params);
+        int finalIndex = history.size() - 1;
+        if (!series.readyAt(finalIndex, params)) {
+            return List.of(new ThoughtConditionEvidence("ema-stack", "EMA stack alignment", ConditionRole.REGIME_FILTER, false,
+                    "EMA stack is not ready; slow EMA plus slope history is still warming."));
+        }
+        EmaSnapshot snapshot = EmaSnapshot.from(series, finalIndex, params);
+        StrategyInstrumentPosition position = context.instrumentPosition();
+        if (position.hasPosition()) {
+            return List.of(
+                    new ThoughtConditionEvidence("cooldown", "Cooldown and position context", ConditionRole.POSITION_CONTEXT, false,
+                            "Existing " + position.side() + " position is active; new entries are blocked."),
+                    new ThoughtConditionEvidence("lifecycle-exit", "Lifecycle exit guard", ConditionRole.EXIT_TRIGGER, false,
+                            "Lifecycle checks are active for the open position.")
+            );
+        }
+        Optional<SetupCandidate> candidate = processIndex(series, finalIndex);
+        boolean trendReady = snapshot.trendStructure() == TrendStructure.CLEAN_UPTREND
+                || snapshot.trendStructure() == TrendStructure.CLEAN_DOWNTREND
+                || snapshot.trendStructure() == TrendStructure.EARLY_UPTREND
+                || snapshot.trendStructure() == TrendStructure.EARLY_DOWNTREND
+                || snapshot.trendStructure() == TrendStructure.PULLBACK_IN_UPTREND
+                || snapshot.trendStructure() == TrendStructure.PULLBACK_IN_DOWNTREND;
+        if (candidate.isEmpty()) {
+            return List.of(
+                    new ThoughtConditionEvidence("ema-stack", "EMA stack alignment", ConditionRole.REGIME_FILTER, trendReady,
+                            "Trend structure is " + snapshot.trendStructure() + "."),
+                    new ThoughtConditionEvidence("pullback", "Pullback touch", ConditionRole.ENTRY_TRIGGER, false,
+                            "No qualifying pullback or transition setup exists on the current bar."),
+                    new ThoughtConditionEvidence("distance-risk", "EMA distance risk", ConditionRole.RISK_GUARD, false,
+                            "Distance checks did not produce an entry candidate."),
+                    new ThoughtConditionEvidence("cooldown", "Cooldown and position context", ConditionRole.POSITION_CONTEXT, true,
+                            "No open position blocks a new setup.")
+            );
+        }
+        SetupCandidate setup = candidate.get();
+        StopComputation stop = stopComputation(series, setup);
+        BigDecimal confidence = entryConfidence(setup.strengthScore(), stop);
+        boolean confidencePassed = confidence.compareTo(params.minConfidence()) >= 0;
+        return List.of(
+                new ThoughtConditionEvidence("ema-stack", "EMA stack alignment", ConditionRole.REGIME_FILTER, true,
+                        "Trend structure is " + setup.snapshot().trendStructure() + "."),
+                new ThoughtConditionEvidence("pullback", "Pullback touch", ConditionRole.ENTRY_TRIGGER, true,
+                        setup.kind() + " candidate passed pullback quality checks."),
+                numericEvidence("distance-risk", "EMA distance risk", ConditionRole.RISK_GUARD, confidencePassed,
+                        "confidence", confidence, ">=", "minConfidence", params.minConfidence(),
+                        confidencePassed ? "Confidence and distance risk are acceptable." : "Confidence after distance adjustment is below minimum."),
+                new ThoughtConditionEvidence("cooldown", "Cooldown and position context", ConditionRole.POSITION_CONTEXT, true,
+                        "No open position blocks a new setup.")
+        );
     }
 
     @Override
@@ -745,6 +831,24 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         return BigDecimal.valueOf(clamped).setScale(4, RoundingMode.HALF_UP);
     }
 
+    private static ThoughtConditionEvidence numericEvidence(
+            String id,
+            String label,
+            ConditionRole role,
+            boolean passed,
+            String leftName,
+            BigDecimal leftValue,
+            String operator,
+            String rightName,
+            BigDecimal rightValue,
+            String message
+    ) {
+        BigDecimal left = leftValue.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal right = rightValue.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal distance = passed ? null : right.subtract(left).abs();
+        return new ThoughtConditionEvidence(id, label, role, passed, leftName, left, operator, rightName, right, distance, message);
+    }
+
     private StrategyTradeIntentReason entryReason(SetupCandidate candidate, StopComputation stop, BigDecimal confidence) {
         EmaSnapshot snapshot = candidate.snapshot();
         Direction direction = candidate.direction();
@@ -1199,6 +1303,34 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
             return 0.0d;
         }
         return (value / Math.abs(close)) * 100.0d;
+    }
+
+    private static Map<String, Object> sideRuntimeState(SideRuntime runtime) {
+        return Map.of(
+                "state", runtime.state.name(),
+                "armedAnchorIndex", runtime.armedAnchorIndex,
+                "lastSignalAnchorIndex", runtime.lastSignalAnchorIndex,
+                "cooldownRemaining", runtime.cooldownRemaining
+        );
+    }
+
+    private static void restoreSideRuntime(SideRuntime runtime, Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            runtime.resetAll();
+            return;
+        }
+        Object state = map.get("state");
+        runtime.state = SignalState.valueOf(state == null ? SignalState.IDLE.name() : state.toString());
+        runtime.armedAnchorIndex = asInt(map.get("armedAnchorIndex"), -1);
+        runtime.lastSignalAnchorIndex = asInt(map.get("lastSignalAnchorIndex"), -1);
+        runtime.cooldownRemaining = asInt(map.get("cooldownRemaining"), 0);
+    }
+
+    private static int asInt(Object value, int fallback) {
+        if (value == null) {
+            return fallback;
+        }
+        return value instanceof Number number ? number.intValue() : Integer.parseInt(value.toString());
     }
 
     private static double pct(BigDecimal value) {

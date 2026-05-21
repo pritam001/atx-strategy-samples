@@ -2,10 +2,20 @@ package org.algotradex.strategy.samples.doflamingov4;
 
 import org.algotradex.platform.contracts.common.enums.StrategyExitRuleType;
 import org.algotradex.platform.contracts.common.enums.StrategyTradeAction;
+import org.algotradex.platform.contracts.common.ids.ReplayId;
+import org.algotradex.platform.contracts.common.ids.RunId;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextSnapshot;
+import org.algotradex.platform.core.api.dto.common.replay.MarketDataVisibilitySnapshot;
+import org.algotradex.platform.core.api.dto.common.replay.ReplayRunMetadata;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyStateEnvelope;
+import org.algotradex.platform.core.api.enums.replay.ReplayMode;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
+import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
+import org.algotradex.platform.core.strategy.simulation.SimulationStepper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -15,6 +25,12 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DoflamingoV4StrategyBehaviorTest {
+    private static final ReplayRunMetadata METADATA = new ReplayRunMetadata(
+            new RunId("run-doflamingo-v4-stepper-resume-test"),
+            new ReplayId("replay-doflamingo-v4-stepper-resume-test"),
+            ReplayMode.FULL_RUN
+    );
+
     @Test
     void trendV4SuppressesV3AdaptiveOnlyReversalFixtureByDefault() {
         var provider = new DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider();
@@ -162,6 +178,71 @@ class DoflamingoV4StrategyBehaviorTest {
                 .isEqualTo(true);
     }
 
+    @Test
+    void ichimokuV4ResumableStateMatchesFreshReplayAcrossCheckpoint() {
+        var provider = new DoflamingoIchimokuMo002BetaV4StrategyProvider();
+        StrategyParameters parameters = new StrategyParameters(Map.ofEntries(
+                Map.entry("trendAverageLookback", 50),
+                Map.entry("minConfidence", "0.50"),
+                Map.entry("htfCloudBiasMode", "ALIGN_WITH_TRADE"),
+                Map.entry("sessionGating", false),
+                Map.entry("minKumoThicknessAtr", "0.0"),
+                Map.entry("minFutureCloudSpreadAtr", "0.0"),
+                Map.entry("maxEntryAtrFromCloudTop", "0.0"),
+                Map.entry("requireChikouClearSpace", false),
+                Map.entry("requireFutureCloudWidening", false),
+                Map.entry("volumeConfirmMultiple", "0.0"),
+                Map.entry("atrExpansionMultiple", "0.0")
+        ));
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        List<BarEvent> h1 = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        int checkpointIndex = Math.max(1, primary.size() / 2);
+        TradeIntentStrategy original = (TradeIntentStrategy) provider.create(parameters, null);
+        replayRangeWithH1(original, primary, h1, 0, checkpointIndex);
+        ResumableStrategy originalState = (ResumableStrategy) original;
+        StrategyStateEnvelope checkpoint = originalState.initialState(
+                DoflamingoIchimokuMo002BetaV4StrategyProvider.STRATEGY_VERSION,
+                "variant-a",
+                parameters
+        );
+
+        TradeIntentStrategy restored = (TradeIntentStrategy) provider.create(parameters, null);
+        ((ResumableStrategy) restored).resumeFromState(originalState.serialise(checkpoint));
+        StrategyIntentResult restoredFinal = replayRangeWithH1(restored, primary, h1, checkpointIndex, primary.size());
+
+        TradeIntentStrategy fresh = (TradeIntentStrategy) provider.create(parameters, null);
+        StrategyIntentResult freshFinal = replayRangeWithH1(fresh, primary, h1, 0, primary.size());
+
+        assertThat(restoredFinal).usingRecursiveComparison().isEqualTo(freshFinal);
+        assertThat(((ResumableStrategy) restored).snapshotState()).isEqualTo(((ResumableStrategy) fresh).snapshotState());
+    }
+
+    @Test
+    void ichimokuV4SimulationStepperStateMatchesFreshReplayAcrossSerializedCheckpoint() {
+        var provider = new DoflamingoIchimokuMo002BetaV4StrategyProvider();
+        StrategyParameters parameters = ichimokuResumeParameters();
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        List<BarEvent> h1 = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        int checkpointIndex = Math.max(1, primary.size() / 2);
+
+        SimulationStepper checkpointed = stepper(provider, parameters);
+        for (int index = 0; index < checkpointIndex; index++) {
+            checkpointed.step(primary.get(index), visibility(primary.get(index), h1, index + 1), MarketContextSnapshot.empty());
+        }
+        StrategyStateEnvelope checkpoint = checkpointed.checkpoint("variant-a");
+
+        SimulationStepper restored = stepper(provider, parameters);
+        restored.resumeFromSerialised(checkpointed.serialise(checkpoint), parameters);
+        var restoredFinal = stepRange(restored, primary, h1, checkpointIndex, primary.size());
+
+        SimulationStepper fresh = stepper(provider, parameters);
+        var freshFinal = stepRange(fresh, primary, h1, 0, primary.size());
+
+        assertThat(restoredFinal.result()).usingRecursiveComparison().isEqualTo(freshFinal.result());
+        assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
+        assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+    }
+
     private static StrategyIntentResult firstIntent(TradeIntentStrategy strategy, List<BarEvent> bars) {
         for (int index = 1; index <= bars.size(); index++) {
             var result = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(bars.subList(0, index)));
@@ -187,5 +268,72 @@ class DoflamingoV4StrategyBehaviorTest {
             }
         }
         return null;
+    }
+
+    private static StrategyIntentResult replayRangeWithH1(
+            TradeIntentStrategy strategy,
+            List<BarEvent> primary,
+            List<BarEvent> h1,
+            int start,
+            int endExclusive
+    ) {
+        StrategyIntentResult result = StrategyIntentResult.empty();
+        for (int index = start + 1; index <= endExclusive; index++) {
+            result = strategy.onBarIntent(DoflamingoStrategyTestSupport.contextWithH1(
+                    primary.subList(0, index),
+                    h1.subList(0, Math.min(index, h1.size()))
+            ));
+        }
+        return result;
+    }
+
+    private static StrategyParameters ichimokuResumeParameters() {
+        return new StrategyParameters(Map.ofEntries(
+                Map.entry("trendAverageLookback", 50),
+                Map.entry("minConfidence", "0.50"),
+                Map.entry("htfCloudBiasMode", "ALIGN_WITH_TRADE"),
+                Map.entry("sessionGating", false),
+                Map.entry("minKumoThicknessAtr", "0.0"),
+                Map.entry("minFutureCloudSpreadAtr", "0.0"),
+                Map.entry("maxEntryAtrFromCloudTop", "0.0"),
+                Map.entry("requireChikouClearSpace", false),
+                Map.entry("requireFutureCloudWidening", false),
+                Map.entry("volumeConfirmMultiple", "0.0"),
+                Map.entry("atrExpansionMultiple", "0.0")
+        ));
+    }
+
+    private static SimulationStepper stepper(DoflamingoIchimokuMo002BetaV4StrategyProvider provider, StrategyParameters parameters) {
+        return new SimulationStepper(
+                List.of((TradeSignalStrategy) provider.create(parameters, null)),
+                METADATA,
+                256,
+                java.time.Clock.systemUTC(),
+                DoflamingoIchimokuMo002BetaV4StrategyProvider.STRATEGY_VERSION,
+                parameters
+        );
+    }
+
+    private static org.algotradex.platform.core.strategy.simulation.SimulationStepResult stepRange(
+            SimulationStepper stepper,
+            List<BarEvent> primary,
+            List<BarEvent> h1,
+            int start,
+            int endExclusive
+    ) {
+        org.algotradex.platform.core.strategy.simulation.SimulationStepResult result = null;
+        for (int index = start; index < endExclusive; index++) {
+            result = stepper.step(primary.get(index), visibility(primary.get(index), h1, index + 1), MarketContextSnapshot.empty());
+        }
+        return result;
+    }
+
+    private static MarketDataVisibilitySnapshot visibility(BarEvent current, List<BarEvent> h1, int visibleBars) {
+        return new MarketDataVisibilitySnapshot(
+                current.occurredAt(),
+                current.timeframe(),
+                Map.of("H1", h1.subList(0, Math.min(visibleBars, h1.size()))),
+                List.of()
+        );
     }
 }

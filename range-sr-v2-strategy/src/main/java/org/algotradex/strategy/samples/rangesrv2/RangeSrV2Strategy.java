@@ -28,9 +28,13 @@ import org.algotradex.platform.contracts.intelligence.TradeIntentPreconditions;
 import org.algotradex.platform.contracts.intelligence.TradeIntentSizing;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
 import java.math.BigDecimal;
@@ -64,7 +68,7 @@ import static java.util.Objects.requireNonNull;
  * slippage, or portfolio accounting. The {@code riskUsdPerTrade} parameter is sample sizing input
  * for intent metadata, not a broker-side risk guarantee.
  */
-public final class RangeSrV2Strategy implements TradeIntentStrategy {
+public final class RangeSrV2Strategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final MathContext MC = MathContext.DECIMAL64;
     private static final int ADX_PERIOD = 14;
     private static final int EMA_PERIOD = 50;
@@ -85,6 +89,34 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
     }
 
     @Override
+    public String stateSchemaVersion() {
+        return "range-sr-v2-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of("cooldownUntilByInstrument", Map.copyOf(cooldownUntilByInstrument));
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        cooldownUntilByInstrument.clear();
+        Object cooldowns = state == null ? null : state.get("cooldownUntilByInstrument");
+        if (cooldowns instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> {
+                if (key != null && value != null) {
+                    cooldownUntilByInstrument.put(key.toString(), instant(value));
+                }
+            });
+        }
+    }
+
+    @Override
+    public Map<String, Object> mergeRewarmedState(Map<String, Object> checkpointState, Map<String, Object> rewarmedState) {
+        return Map.copyOf(checkpointState == null ? Map.of() : checkpointState);
+    }
+
+    @Override
     public List<StrategyCapability> lifecycleCapabilities() {
         return List.of(
                 StrategyCapability.LONG_SIGNALS,
@@ -95,6 +127,10 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
+    }
+
+    private static Instant instant(Object value) {
+        return value instanceof Instant instant ? instant : Instant.parse(value.toString());
     }
 
     @Override
@@ -126,6 +162,71 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
             cooldownUntilByInstrument.put(instrumentId, current.occurredAt().plus(Duration.ofHours(params.cooldownHours())));
         }
         return new StrategyIntentResult(List.of(signal), List.of(intent), List.of());
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        BarEvent current = context.currentBar();
+        String instrumentId = current.instrument().instrumentId();
+        Instant cooldownUntil = cooldownUntilByInstrument.get(instrumentId);
+        if (cooldownUntil != null && current.occurredAt().isBefore(cooldownUntil)) {
+            return List.of(new ThoughtConditionEvidence(
+                    "cooldown",
+                    "Cooldown",
+                    ConditionRole.POSITION_CONTEXT,
+                    false,
+                    "Cooldown active until " + cooldownUntil
+            ));
+        }
+        String executionTimeframe = executionTimeframe(current);
+        List<BarEvent> executionBars = last(context.history(executionTimeframe), params.ltfLookback());
+        List<BarEvent> bars4h = last(context.history("H4"), params.htfLookback());
+        if (executionBars.size() < 20 || bars4h.size() < 50) {
+            return List.of(
+                    numericEvidence("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, false,
+                            "bars4h", BigDecimal.valueOf(bars4h.size()), ">=", "requiredBars", BigDecimal.valueOf(50),
+                            "Need at least 50 H4 bars before trend strength is reliable."),
+                    numericEvidence("pattern", "Reversal pattern", ConditionRole.ENTRY_TRIGGER, false,
+                            "executionBars", BigDecimal.valueOf(executionBars.size()), ">=", "requiredBars", BigDecimal.valueOf(20),
+                            "Need at least 20 execution bars before lower-timeframe pattern checks run.")
+            );
+        }
+        Optional<Setup> setup = evaluate(current, bars4h, executionBars, executionTimeframe);
+        if (setup.isPresent()) {
+            Setup accepted = setup.get();
+            return List.of(
+                    numericEvidence("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, true,
+                            "adx4h", accepted.adx4h(), ">=", "minTrendAdx", params.minTrendAdx(),
+                            "H4 trend strength is high enough for a range-edge trade."),
+                    new ThoughtConditionEvidence("zone-match", "Defended support/resistance zone", ConditionRole.ENTRY_FILTER, true,
+                            "Price is in the correct range half for " + accepted.side() + "."),
+                    numericEvidence("confluence", "Structure confluence", ConditionRole.ENTRY_FILTER, true,
+                            "confluence", BigDecimal.valueOf(accepted.confluence()), ">=", "minConfluence", BigDecimal.valueOf(params.minConfluence()),
+                            "Defended level has enough confluence."),
+                    numericEvidence("pattern", "Reversal pattern", ConditionRole.ENTRY_TRIGGER, true,
+                            "patternConfidence", accepted.pattern().confidence(), ">=", "minPatternConfidence", params.minPatternConfidence(),
+                            accepted.pattern().type() + " confirms rejection at the defended level."),
+                    numericEvidence("rr", "Reward/risk", ConditionRole.RISK_GUARD, true,
+                            "rr", accepted.rr(), ">=", "minRR", params.atrMultMinRR(),
+                            "Nearest real structure target satisfies the reward/risk requirement.")
+            );
+        }
+        BigDecimal adx4h = adx(bars4h, ADX_PERIOD);
+        boolean trendPassed = adx4h.compareTo(params.minTrendAdx()) >= 0;
+        return List.of(
+                numericEvidence("h4-trend", "H4 trend strength", ConditionRole.REGIME_FILTER, trendPassed,
+                        "adx4h", adx4h, ">=", "minTrendAdx", params.minTrendAdx(),
+                        trendPassed ? "H4 trend strength passed." : "H4 trend strength is below the configured threshold."),
+                new ThoughtConditionEvidence("zone-match", "Defended support/resistance zone", ConditionRole.ENTRY_FILTER, false,
+                        "No complete defended support/resistance zone matched the current price and side."),
+                new ThoughtConditionEvidence("confluence", "Structure confluence", ConditionRole.ENTRY_FILTER, false,
+                        "The current defended level did not satisfy all confluence requirements."),
+                new ThoughtConditionEvidence("pattern", "Reversal pattern", ConditionRole.ENTRY_TRIGGER, false,
+                        "No qualifying lower-timeframe reversal pattern fired at the defended level."),
+                new ThoughtConditionEvidence("rr", "Reward/risk", ConditionRole.RISK_GUARD, false,
+                        "No valid structure target satisfied the configured reward/risk requirement.")
+        );
     }
 
     static BigDecimal ema(List<BarEvent> bars, int period) {
@@ -407,6 +508,24 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy {
     ) {
         String message = leftName + "=" + decimal(leftValue).toPlainString() + " " + operator + " " + rightName + "=" + decimal(rightValue).toPlainString();
         return new StrategyTradeIntentConditionEvidence(id, label, leftName, decimal(leftValue), operator, rightName, decimal(rightValue), passed, message);
+    }
+
+    private static ThoughtConditionEvidence numericEvidence(
+            String id,
+            String label,
+            ConditionRole role,
+            boolean passed,
+            String leftName,
+            BigDecimal leftValue,
+            String operator,
+            String rightName,
+            BigDecimal rightValue,
+            String message
+    ) {
+        BigDecimal left = decimal(leftValue);
+        BigDecimal right = decimal(rightValue);
+        BigDecimal distance = passed || left == null || right == null ? null : right.subtract(left, MC).abs();
+        return new ThoughtConditionEvidence(id, label, role, passed, leftName, left, operator, rightName, right, distance, message);
     }
 
     private static StrategyTradeIntentConditionEvidence condition(

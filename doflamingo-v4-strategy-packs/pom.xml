@@ -28,6 +28,13 @@
         </dependency>
 
         <dependency>
+            <groupId>org.algotradex.platform</groupId>
+            <artifactId>atx-core-strategy</artifactId>
+            <version>${atx.platform.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>

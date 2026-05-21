@@ -14,15 +14,20 @@ import org.algotradex.platform.contracts.common.refs.SourceRef;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.contracts.market.OHLCV;
+import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextSnapshot;
 import org.algotradex.platform.core.api.dto.common.replay.MarketDataVisibilitySnapshot;
 import org.algotradex.platform.core.api.dto.common.replay.ReplayRunMetadata;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyStateEnvelope;
 import org.algotradex.platform.core.api.enums.replay.ReplayMode;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
+import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
+import org.algotradex.platform.core.strategy.simulation.SimulationStepper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -151,6 +156,59 @@ class RangeSrV2StrategyProviderTest {
     }
 
     @Test
+    void resumableStateMatchesFreshReplayAcrossCheckpoint() {
+        TradeIntentStrategy original = strategy(Map.of("cooldownHours", 4));
+        StrategyExecutionContext first = context(bullishM15Setup(), h4TrendStructure(130.0d));
+        StrategyExecutionContext second = context(shift(bullishM15Setup(), 1), h4TrendStructure(130.0d));
+        original.onBarIntent(first);
+        ResumableStrategy originalState = (ResumableStrategy) original;
+        StrategyStateEnvelope checkpoint = originalState.initialState(
+                RangeSrV2StrategyProvider.STRATEGY_VERSION,
+                "variant-a",
+                StrategyParameters.empty()
+        );
+
+        TradeIntentStrategy restored = strategy(Map.of("cooldownHours", 4));
+        ((ResumableStrategy) restored).resumeFromState(originalState.serialise(checkpoint));
+        StrategyIntentResult restoredSecond = restored.onBarIntent(second);
+
+        TradeIntentStrategy fresh = strategy(Map.of("cooldownHours", 4));
+        fresh.onBarIntent(first);
+        StrategyIntentResult freshSecond = fresh.onBarIntent(second);
+
+        assertThat(restoredSecond).usingRecursiveComparison().isEqualTo(freshSecond);
+        assertThat(((ResumableStrategy) restored).snapshotState()).isEqualTo(((ResumableStrategy) fresh).snapshotState());
+    }
+
+    @Test
+    void simulationStepperStateMatchesFreshReplayAcrossSerializedCheckpoint() {
+        StrategyParameters parameters = new StrategyParameters(Map.of("cooldownHours", 4));
+        List<BarEvent> h4 = h4TrendStructure(130.0d);
+        List<BarEvent> warmup = bullishM15Setup();
+        BarEvent next = shift(bullishM15Setup(), 1).getLast();
+
+        SimulationStepper checkpointed = stepper(parameters);
+        for (BarEvent bar : warmup) {
+            checkpointed.step(bar, visibility(bar, h4), MarketContextSnapshot.empty());
+        }
+        StrategyStateEnvelope checkpoint = checkpointed.checkpoint("variant-a");
+
+        SimulationStepper restored = stepper(parameters);
+        restored.resumeFromSerialised(checkpointed.serialise(checkpoint), parameters);
+        var restoredNext = restored.step(next, visibility(next, h4), MarketContextSnapshot.empty());
+
+        SimulationStepper fresh = stepper(parameters);
+        for (BarEvent bar : warmup) {
+            fresh.step(bar, visibility(bar, h4), MarketContextSnapshot.empty());
+        }
+        var freshNext = fresh.step(next, visibility(next, h4), MarketContextSnapshot.empty());
+
+        assertThat(restoredNext.result()).usingRecursiveComparison().isEqualTo(freshNext.result());
+        assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
+        assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+    }
+
+    @Test
     void skipsFlatH4Trend() {
         TradeIntentStrategy strategy = strategy(Map.of());
 
@@ -189,6 +247,21 @@ class RangeSrV2StrategyProviderTest {
         Map<String, Object> params = new LinkedHashMap<>();
         params.putAll(overrides);
         return (TradeIntentStrategy) provider.create(new StrategyParameters(params), null);
+    }
+
+    private SimulationStepper stepper(StrategyParameters parameters) {
+        return new SimulationStepper(
+                List.of((TradeSignalStrategy) provider.create(parameters, null)),
+                METADATA,
+                256,
+                java.time.Clock.systemUTC(),
+                RangeSrV2StrategyProvider.STRATEGY_VERSION,
+                parameters
+        );
+    }
+
+    private static MarketDataVisibilitySnapshot visibility(BarEvent current, List<BarEvent> h4) {
+        return new MarketDataVisibilitySnapshot(current.occurredAt(), current.timeframe(), Map.of("H4", h4), List.of());
     }
 
     private static StrategyExecutionContext context(List<BarEvent> executionBars, List<BarEvent> h4) {

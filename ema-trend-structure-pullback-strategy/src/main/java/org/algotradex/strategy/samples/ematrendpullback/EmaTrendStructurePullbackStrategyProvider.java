@@ -5,10 +5,15 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
@@ -80,7 +85,7 @@ public final class EmaTrendStructurePullbackStrategyProvider implements Strategy
     private static final String INDICATOR_FORMULA_VERSION = "atx-indicator-formula-v1";
     private static final String EMA_TREND_STRUCTURE_FORMULA_VERSION = "ema-trend-structure-v1";
 
-    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
+    private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(withResumePolicies(List.of(
             integer(FAST_EMA_PERIOD, "Fast EMA Period", "Closed-bar period count for EMA20 structure.", 20, 2, 100),
             integer(MEDIUM_EMA_PERIOD, "Medium EMA Period", "Closed-bar period count for EMA50 structure.", 50, 5, 250),
             integer(SLOW_EMA_PERIOD, "Slow EMA Period", "Closed-bar period count for EMA200 structure.", 200, 5, 500),
@@ -122,7 +127,7 @@ public final class EmaTrendStructurePullbackStrategyProvider implements Strategy
             bool(BREAK_EVEN_AFTER_SCALE_OUT, "Break Even After Scale Out", "Exit remainder if a scaled-out trade gives back to breakeven.", true),
             bool(EXIT_ON_COMPRESSION, "Exit On Compression", "Exit losing trades when EMA compression appears.", true),
             bool(EXIT_ON_CHOP, "Exit On Chop", "Exit losing trades when recent price/EMA crosses indicate chop.", true)
-    ));
+    )));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
@@ -151,7 +156,8 @@ public final class EmaTrendStructurePullbackStrategyProvider implements Strategy
                     new StrategyChartStudy("ema-trend-structure", "EMA Trend Structure", "structure-pane", Map.of(),
                             EMA_TREND_STRUCTURE_FORMULA_VERSION, false,
                             "Visualization only; strategy recomputes EMA trend structure from closed replay bars.")
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -283,6 +289,74 @@ public final class EmaTrendStructurePullbackStrategyProvider implements Strategy
     private static StrategyParameterDefinition bool(String key, String label, String description, boolean defaultValue) {
         return new StrategyParameterDefinition(key, StrategyParameterType.BOOLEAN, label, description, true,
                 defaultValue, null, null, List.of());
+    }
+
+    private static List<StrategyParameterDefinition> withResumePolicies(List<StrategyParameterDefinition> definitions) {
+        return definitions.stream()
+                .map(definition -> new StrategyParameterDefinition(
+                        definition.key(),
+                        definition.type(),
+                        definition.label(),
+                        definition.description(),
+                        definition.required(),
+                        definition.defaultValue(),
+                        definition.min(),
+                        definition.max(),
+                        definition.allowedValues(),
+                        resumePolicy(definition.key())
+                ))
+                .toList();
+    }
+
+    private static StrategyParameterResumePolicy resumePolicy(String key) {
+        return switch (key) {
+            case FAST_EMA_PERIOD -> StrategyParameterResumePolicy.lookback(20);
+            case MEDIUM_EMA_PERIOD -> StrategyParameterResumePolicy.lookback(50);
+            case SLOW_EMA_PERIOD -> StrategyParameterResumePolicy.lookback(200);
+            case SLOPE_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(5);
+            case CHOP_CROSS_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(20);
+            case PULLBACK_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(8);
+            case PRIOR_BREAKOUT_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(3);
+            case TRANSITION_BREAKOUT_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(5);
+            case ATR_PERIOD -> StrategyParameterResumePolicy.lookback(14);
+            case FLAT_SLOPE_THRESHOLD_PCT, COMPRESSED_SEPARATION_THRESHOLD_PCT,
+                    EXPANDING_SEPARATION_THRESHOLD_PCT, CHOP_CROSS_COUNT_THRESHOLD, PULLBACK_MIN_BARS,
+                    EMA_TOUCH_TOLERANCE_PCT, MAX_DISTANCE_FROM_FAST_EMA_PCT,
+                    IDEAL_DISTANCE_FROM_FAST_EMA_PCT, MAX_DISTANCE_FROM_MEDIUM_EMA_PCT, MIN_CONFIDENCE,
+                    ALLOW_SHORTS, EXIT_ON_COMPRESSION, EXIT_ON_CHOP -> StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.forwardOnly();
+        };
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                "ema-trend-structure-pullback-v2-reasoning-v1",
+                "Trade only when the EMA stack describes trend structure, the pullback is controlled, entry distance is reasonable, and lifecycle exits remain guarded.",
+                "EMA Trend Structure Pullback checks EMA stack, pullback quality, distance risk, lifecycle state, and exit guards.",
+                List.of(
+                        phase("trend", "Trend", "Classify EMA stack, slope, compression, and chop before considering an entry."),
+                        phase("pullback", "Pullback", "Wait for price to approach the fast EMA without losing medium EMA structure."),
+                        phase("risk", "Risk", "Reject entries too far from the fast or medium EMA."),
+                        phase("lifecycle", "Lifecycle", "Explain position context, scale, stale, compression, and chop exits.")
+                ),
+                List.of(
+                        condition("ema-stack", "EMA stack alignment", ConditionRole.REGIME_FILTER, true, "trend", "Avoid entries when EMA order, slope, compression, or chop do not show a clean trend."),
+                        condition("pullback", "Pullback touch", ConditionRole.ENTRY_TRIGGER, true, "pullback", "Require a real pullback into fast EMA structure before entering."),
+                        condition("distance-risk", "EMA distance risk", ConditionRole.RISK_GUARD, true, "risk", "Avoid stretched entries whose distance from EMA structure is too large."),
+                        condition("cooldown", "Cooldown and position context", ConditionRole.POSITION_CONTEXT, true, "lifecycle", "Prevent duplicate entries while a position or lifecycle constraint is active."),
+                        condition("lifecycle-exit", "Lifecycle exit guard", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain compression, chop, scale, stale, and hard exit decisions.")
+                )
+        );
+    }
+
+    private static ReasoningPhaseDescriptor phase(String id, String label, String description) {
+        return new ReasoningPhaseDescriptor(id, label, description);
+    }
+
+    private static ReasoningConditionDescriptor condition(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed.",
+                label + " blocked the setup.");
     }
 
     private static StrategyChartStudy emaStudy(int period, String role, boolean required) {
