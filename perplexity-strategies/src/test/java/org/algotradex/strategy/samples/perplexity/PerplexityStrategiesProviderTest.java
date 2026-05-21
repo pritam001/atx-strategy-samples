@@ -31,9 +31,12 @@ import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyOrigin;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
+import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
+import org.algotradex.platform.core.strategy.simulation.SimulationStepper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -294,6 +297,67 @@ class PerplexityStrategiesProviderTest {
         assertThat(result.tradeIntents().getFirst().horizon().maxHoldingBars()).isEqualTo(12);
         assertThat(result.tradeIntents().getFirst().reason().conditions()).extracting("conditionId")
                 .contains("rsi-swing.trend", "rsi-swing.pullback-zone", "rsi-swing.resumption", "rsi-swing.volume");
+    }
+
+    @Test
+    void simulationStepperEmissionsMatchDirectReplayGoldenActions() {
+        assertSimulationReplayMatchesDirectGolden(
+                ORB,
+                Map.of(
+                        "openingRangeBars", 6,
+                        "atrPeriod", 5,
+                        "volumeLookbackBars", 5,
+                        "breakoutBufferPct", "0.001",
+                        "minRelativeVolume", "1.20",
+                        "riskFraction", "0.01",
+                        "maxHoldingBars", 18
+                ),
+                orbBreakoutBars(),
+                List.of("ENTER_LONG")
+        );
+        assertSimulationReplayMatchesDirectGolden(
+                BOLLINGER_RSI,
+                Map.of(
+                        "bollingerPeriod", 10,
+                        "bollingerStdDev", "2.0",
+                        "rsiPeriod", 5,
+                        "oversoldRsi", 45,
+                        "trendLookbackBars", 18,
+                        "riskFraction", "0.01",
+                        "maxHoldingBars", 24
+                ),
+                bollingerRsiRangeBars(),
+                List.of("ENTER_LONG", "ENTER_LONG")
+        );
+        assertSimulationReplayMatchesDirectGolden(
+                VWAP_REVERSION,
+                Map.of(
+                        "vwapBandPct", "0.006",
+                        "atrPeriod", 5,
+                        "volumeLookbackBars", 5,
+                        "minRelativeVolume", "1.00",
+                        "riskFraction", "0.01",
+                        "maxHoldingBars", 18
+                ),
+                vwapReversionBars(),
+                List.of("ENTER_LONG")
+        );
+        assertSimulationReplayMatchesDirectGolden(
+                RSI_SWING,
+                Map.of(
+                        "fastEmaPeriod", 5,
+                        "slowEmaPeriod", 13,
+                        "rsiPeriod", 5,
+                        "pullbackRsiMin", 35,
+                        "pullbackRsiMax", 65,
+                        "volumeLookbackBars", 8,
+                        "minRelativeVolume", "1.00",
+                        "riskFraction", "0.01",
+                        "maxHoldingBars", 12
+                ),
+                rsiSwingDailyBars(),
+                List.of("ENTER_LONG")
+        );
     }
 
     @Test
@@ -575,6 +639,53 @@ class PerplexityStrategiesProviderTest {
         var context = new StrategyInstantiationContext(provider.descriptor().identity(), StrategyOrigin.CLASSPATH_PLUGIN, provider.descriptor().providerId());
         assertThat(provider.create(validation.effectiveParameters(), context)).isInstanceOf(TradeIntentStrategy.class);
         return (TradeIntentStrategy) provider.create(validation.effectiveParameters(), context);
+    }
+
+    private static void assertSimulationReplayMatchesDirectGolden(
+            String strategyId,
+            Map<String, Object> parameters,
+            List<BarEvent> bars,
+            List<String> expectedActions
+    ) {
+        List<String> direct = replayDirectActions(strategyId, parameters, bars);
+        List<String> stepped = replayStepperActions(strategyId, parameters, bars);
+
+        assertThat(direct).as(strategyId + " direct replay").startsWith(expectedActions.toArray(String[]::new));
+        assertThat(stepped).as(strategyId + " SimulationStepper replay").containsExactlyElementsOf(expectedActions);
+    }
+
+    private static List<String> replayDirectActions(String strategyId, Map<String, Object> parameters, List<BarEvent> bars) {
+        TradeIntentStrategy strategy = strategy(strategyId, parameters);
+        List<String> actions = new ArrayList<>();
+        for (int index = 1; index <= bars.size(); index++) {
+            strategy.onBarIntent(context(bars.subList(0, index))).tradeIntents().stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
+    }
+
+    private static List<String> replayStepperActions(String strategyId, Map<String, Object> parameters, List<BarEvent> bars) {
+        StrategyProvider provider = provider(strategyId);
+        StrategyParameters supplied = new StrategyParameters(parameters);
+        var validation = provider.validate(supplied);
+        assertThat(validation.valid()).as("valid parameters for %s: %s", strategyId, validation.issues()).isTrue();
+        var context = new StrategyInstantiationContext(provider.descriptor().identity(), StrategyOrigin.CLASSPATH_PLUGIN, provider.descriptor().providerId());
+        SimulationStepper stepper = new SimulationStepper(
+                List.of((TradeSignalStrategy) provider.create(validation.effectiveParameters(), context)),
+                METADATA,
+                256,
+                Clock.systemUTC(),
+                provider.descriptor().identity().strategyVersion(),
+                validation.effectiveParameters()
+        );
+        List<String> actions = new ArrayList<>();
+        for (BarEvent bar : bars) {
+            stepper.step(bar, MarketDataVisibilitySnapshot.empty(), MarketContextSnapshot.empty()).result().emittedTradeIntents().stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
     }
 
     private static void assertDefault(String strategyId, String key, Object expected) {

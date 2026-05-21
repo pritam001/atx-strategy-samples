@@ -1,10 +1,15 @@
 package org.algotradex.strategy.samples.smapullback;
 
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.dto.common.indicator.StrategyChartStudy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
@@ -51,28 +56,28 @@ public final class Sma20PullbackContinuationStrategyProvider implements Strategy
     private static final String FORMULA_VERSION = "atx-indicator-formula-v1";
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
-            new StrategyParameterDefinition(FAST_SMA_PERIOD, StrategyParameterType.INTEGER, "Fast SMA Period",
-                    "Closed-bar period count for the active pullback SMA guide.", true, 20, BigDecimal.valueOf(5), BigDecimal.valueOf(100), List.of()),
-            new StrategyParameterDefinition(SLOW_SMA_PERIOD, StrategyParameterType.INTEGER, "Slow SMA Period",
-                    "Closed-bar period count for the support/resistance context SMA.", true, 200, BigDecimal.valueOf(50), BigDecimal.valueOf(400), List.of()),
-            new StrategyParameterDefinition(SLOPE_LOOKBACK_BARS, StrategyParameterType.INTEGER, "Slope Lookback Bars",
-                    "Closed-bar lookback used to classify the fast SMA slope.", true, 5, BigDecimal.valueOf(3), BigDecimal.valueOf(20), List.of()),
-            new StrategyParameterDefinition(MIN_SMA20_SLOPE_PCT, StrategyParameterType.DECIMAL, "Minimum SMA20 Slope %",
-                    "Minimum fast-SMA slope percentage over the lookback window to classify trend.", true, BigDecimal.valueOf(0.05), BigDecimal.ZERO, BigDecimal.valueOf(5.0), List.of()),
-            new StrategyParameterDefinition(TOUCH_TOLERANCE_PCT, StrategyParameterType.DECIMAL, "Touch Tolerance %",
-                    "Price is considered near the fast SMA when within this percentage.", true, BigDecimal.valueOf(0.20), BigDecimal.ZERO, BigDecimal.valueOf(5.0), List.of()),
-            new StrategyParameterDefinition(MAX_ENTRY_EXTENSION_PCT, StrategyParameterType.DECIMAL, "Maximum Entry Extension %",
-                    "Skip entries when close is farther than this percentage from the fast SMA.", true, BigDecimal.valueOf(1.25), BigDecimal.valueOf(0.01), BigDecimal.valueOf(20.0), List.of()),
-            new StrategyParameterDefinition(CONSOLIDATION_LOOKBACK_BARS, StrategyParameterType.INTEGER, "Consolidation Lookback Bars",
-                    "Recent closed bars used to detect pullback/touch and breakout trigger levels.", true, 4, BigDecimal.valueOf(2), BigDecimal.valueOf(12), List.of()),
-            new StrategyParameterDefinition(COOLDOWN_BARS, StrategyParameterType.INTEGER, "Cooldown Bars",
-                    "Number of bars to suppress after an emitted signal.", true, 8, BigDecimal.ONE, BigDecimal.valueOf(50), List.of()),
-            new StrategyParameterDefinition(MIN_CONFIDENCE, StrategyParameterType.DECIMAL, "Minimum Confidence",
-                    "Minimum computed setup-quality confidence required to emit a TradeSignal.", true, BigDecimal.valueOf(0.62), BigDecimal.valueOf(0.50), BigDecimal.valueOf(0.90), List.of()),
-            new StrategyParameterDefinition(ALLOW_SHORTS, StrategyParameterType.BOOLEAN, "Allow Shorts",
-                    "Emit short pullback continuation signals when conditions mirror the long setup.", true, true, null, null, List.of()),
-            new StrategyParameterDefinition(USE_SMA200_OBSTACLE_FILTER, StrategyParameterType.BOOLEAN, "Use SMA200 Obstacle Filter",
-                    "Downgrade confidence when the slow SMA is a nearby support/resistance obstacle.", true, true, null, null, List.of())
+            withResumePolicy(new StrategyParameterDefinition(FAST_SMA_PERIOD, StrategyParameterType.INTEGER, "Fast SMA Period",
+                    "Closed-bar period count for the active pullback SMA guide.", true, 20, BigDecimal.valueOf(5), BigDecimal.valueOf(100), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(SLOW_SMA_PERIOD, StrategyParameterType.INTEGER, "Slow SMA Period",
+                    "Closed-bar period count for the support/resistance context SMA.", true, 200, BigDecimal.valueOf(50), BigDecimal.valueOf(400), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(SLOPE_LOOKBACK_BARS, StrategyParameterType.INTEGER, "Slope Lookback Bars",
+                    "Closed-bar lookback used to classify the fast SMA slope.", true, 5, BigDecimal.valueOf(3), BigDecimal.valueOf(20), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(MIN_SMA20_SLOPE_PCT, StrategyParameterType.DECIMAL, "Minimum SMA20 Slope %",
+                    "Minimum fast-SMA slope percentage over the lookback window to classify trend.", true, BigDecimal.valueOf(0.05), BigDecimal.ZERO, BigDecimal.valueOf(5.0), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(TOUCH_TOLERANCE_PCT, StrategyParameterType.DECIMAL, "Touch Tolerance %",
+                    "Price is considered near the fast SMA when within this percentage.", true, BigDecimal.valueOf(0.20), BigDecimal.ZERO, BigDecimal.valueOf(5.0), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(MAX_ENTRY_EXTENSION_PCT, StrategyParameterType.DECIMAL, "Maximum Entry Extension %",
+                    "Skip entries when close is farther than this percentage from the fast SMA.", true, BigDecimal.valueOf(1.25), BigDecimal.valueOf(0.01), BigDecimal.valueOf(20.0), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(CONSOLIDATION_LOOKBACK_BARS, StrategyParameterType.INTEGER, "Consolidation Lookback Bars",
+                    "Recent closed bars used to detect pullback/touch and breakout trigger levels.", true, 4, BigDecimal.valueOf(2), BigDecimal.valueOf(12), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(COOLDOWN_BARS, StrategyParameterType.INTEGER, "Cooldown Bars",
+                    "Number of bars to suppress after an emitted signal.", true, 8, BigDecimal.ONE, BigDecimal.valueOf(50), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(MIN_CONFIDENCE, StrategyParameterType.DECIMAL, "Minimum Confidence",
+                    "Minimum computed setup-quality confidence required to emit a TradeSignal.", true, BigDecimal.valueOf(0.62), BigDecimal.valueOf(0.50), BigDecimal.valueOf(0.90), List.of())),
+            withResumePolicy(new StrategyParameterDefinition(ALLOW_SHORTS, StrategyParameterType.BOOLEAN, "Allow Shorts",
+                    "Emit short pullback continuation signals when conditions mirror the long setup.", true, true, null, null, List.of())),
+            withResumePolicy(new StrategyParameterDefinition(USE_SMA200_OBSTACLE_FILTER, StrategyParameterType.BOOLEAN, "Use SMA200 Obstacle Filter",
+                    "Downgrade confidence when the slow SMA is a nearby support/resistance obstacle.", true, true, null, null, List.of()))
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -87,7 +92,8 @@ public final class Sma20PullbackContinuationStrategyProvider implements Strategy
             List.of(
                     smaStudy(20, "pullback-guide", true),
                     smaStudy(200, "support-resistance-context", false)
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -144,5 +150,40 @@ public final class Sma20PullbackContinuationStrategyProvider implements Strategy
 
     private static StrategyChartStudy smaStudy(int period, String role, boolean required) {
         return new StrategyChartStudy("sma", "SMA", role, Map.of("period", period), FORMULA_VERSION, required, "");
+    }
+
+    private static StrategyParameterDefinition withResumePolicy(StrategyParameterDefinition definition) {
+        StrategyParameterResumePolicy policy = switch (definition.key()) {
+            case FAST_SMA_PERIOD -> StrategyParameterResumePolicy.lookback(100);
+            case SLOW_SMA_PERIOD -> StrategyParameterResumePolicy.lookback(400);
+            case SLOPE_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(20);
+            case CONSOLIDATION_LOOKBACK_BARS -> StrategyParameterResumePolicy.lookback(12);
+            case MIN_SMA20_SLOPE_PCT, TOUCH_TOLERANCE_PCT, MAX_ENTRY_EXTENSION_PCT, COOLDOWN_BARS,
+                    MIN_CONFIDENCE, ALLOW_SHORTS, USE_SMA200_OBSTACLE_FILTER -> StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.lookback(null);
+        };
+        return new StrategyParameterDefinition(definition.key(), definition.type(), definition.label(), definition.description(),
+                definition.required(), definition.defaultValue(), definition.min(), definition.max(), definition.allowedValues(), policy);
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                STRATEGY_VERSION + "-reasoning-v1",
+                "SMA pullback continuation waits for directional fast-SMA slope, a pullback touch, and a breakout trigger with confidence/risk guards.",
+                "SMA pullback phase={phase}; blocked={blocked_by}.",
+                List.of(
+                        new ReasoningPhaseDescriptor("warmup", "Warmup", "Seed SMA and slope windows."),
+                        new ReasoningPhaseDescriptor("scanning", "Scanning", "Track trend and wait for pullback structure."),
+                        new ReasoningPhaseDescriptor("signal", "Signal", "Pullback and trigger are present."),
+                        new ReasoningPhaseDescriptor("cooldown", "Cooldown", "Suppress duplicate signals after a fired setup.")
+                ),
+                List.of(
+                        new ReasoningConditionDescriptor("sma-pullback.warmup", "SMA pullback warmup complete", ConditionRole.ENTRY_FILTER, true, "warmup", "Avoid emitting before SMA windows are available.", "SMA windows are ready", "SMA windows are still warming up"),
+                        new ReasoningConditionDescriptor("sma-pullback.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT, true, "cooldown", "Prevent repeated signals from the same setup.", "Cooldown is clear", "Cooldown is still active"),
+                        new ReasoningConditionDescriptor("sma-pullback.trend", "Fast SMA slope defines a trend", ConditionRole.REGIME_FILTER, true, "scanning", "Require slope bias before looking for a pullback.", "Fast SMA has directional bias", "Fast SMA is flat"),
+                        new ReasoningConditionDescriptor("sma-pullback.pullback", "Pullback touch and trigger are present", ConditionRole.ENTRY_TRIGGER, true, "signal", "Require a pullback touch and trigger breakout.", "Pullback trigger is present", "No pullback trigger yet"),
+                        new ReasoningConditionDescriptor("sma-pullback.confidence", "Setup confidence clears threshold", ConditionRole.RISK_GUARD, true, "signal", "Block low-quality pullbacks.", "Confidence clears threshold", "Confidence is below threshold")
+                )
+        );
     }
 }

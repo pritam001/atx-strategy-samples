@@ -1,9 +1,14 @@
 package org.algotradex.strategy.samples.doflamingov3;
 
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
@@ -135,7 +140,7 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
             new StrategyParameterDefinition(SHORT_SCALE_OUT_FRACTION, StrategyParameterType.DECIMAL, "Short Scale Out Fraction",
                     "Open-position fraction requested by short scale-out intents.",
                     true, BigDecimal.valueOf(0.50), BigDecimal.valueOf(0.01), BigDecimal.ONE, List.of())
-    ));
+    ).stream().map(DoflamingoIchimokuMo002BetaStrategyProvider::withResumePolicy).toList());
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
@@ -165,7 +170,8 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                     DoflamingoChartStudies.sma(200, "trend-score-component", false),
                     DoflamingoChartStudies.unsupported("trend-score", "Trend Score", "trend-acceleration-filter", Map.of("lookback", 10), false),
                     DoflamingoChartStudies.unsupported("atr", "ATR", "protective-stop-context", Map.of("period", 14), false)
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -236,5 +242,49 @@ public final class DoflamingoIchimokuMo002BetaStrategyProvider implements Strate
                 effective.decimal(SHORT_SCALE_OUT_AT_R, BigDecimal.valueOf(1.00)),
                 effective.decimal(SHORT_SCALE_OUT_FRACTION, BigDecimal.valueOf(0.50))
         );
+    }
+
+    private static StrategyParameterDefinition withResumePolicy(StrategyParameterDefinition definition) {
+        StrategyParameterResumePolicy policy = switch (definition.key()) {
+            case TREND_AVERAGE_LOOKBACK -> StrategyParameterResumePolicy.lookback(200);
+            case ATR_PERIOD -> StrategyParameterResumePolicy.lookback(100);
+            case STRUCTURE_EXIT_CONFIRM_BARS -> StrategyParameterResumePolicy.lookback(20);
+            case ENTRY_MODE, MIN_CONFIDENCE, MAX_HOLDING_BARS, RISK_FRACTION, ENABLE_PROTECTIVE_STOP,
+                    STOP_MODE, ATR_STOP_MULTIPLE, CLOUD_STOP_BUFFER_PCT, COOLDOWN_BARS,
+                    SKIP_MARKET_REGIMES, ALLOW_SHORTS, SHORT_CLOUD_PRICE_MODE, SHORT_EMA_CLOUD_MODE,
+                    MIN_STOP_PCT, MAX_STOP_PCT, ALLOW_REVERSAL, SHORT_STALE_BARS, SHORT_STALE_MIN_R,
+                    ALLOW_SHORT_SCALE_OUT, SHORT_SCALE_OUT_AT_R, SHORT_SCALE_OUT_FRACTION -> StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.lookback(null);
+        };
+        return new StrategyParameterDefinition(definition.key(), definition.type(), definition.label(), definition.description(),
+                definition.required(), definition.defaultValue(), definition.min(), definition.max(), definition.allowedValues(), policy);
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                STRATEGY_VERSION + "-reasoning-v1",
+                "Doflamingo v3 Ichimoku explains cloud quality, momentum confirmation, trend bias, regime filters, and lifecycle risk without changing the entry logic.",
+                "Doflamingo v3 Ichimoku phase={phase}; blocked={blocked_by}.",
+                List.of(
+                        new ReasoningPhaseDescriptor("cloud", "Cloud", "Validate Ichimoku cloud structure and readiness."),
+                        new ReasoningPhaseDescriptor("momentum", "Momentum", "Check conversion/base, breakout, and trend momentum."),
+                        new ReasoningPhaseDescriptor("filters", "Filters", "Apply market-regime and side filters."),
+                        new ReasoningPhaseDescriptor("risk", "Risk", "Check cooldown, confidence, stop, and lifecycle risk."),
+                        new ReasoningPhaseDescriptor("lifecycle", "Lifecycle", "Explain exits, scale-outs, and reversals while a position is open.")
+                ),
+                List.of(
+                        condition("cloud-quality", "Cloud quality", ConditionRole.REGIME_FILTER, true, "cloud", "Avoid ambiguous or unseeded Ichimoku cloud state."),
+                        condition("momentum", "Momentum confirmation", ConditionRole.ENTRY_TRIGGER, true, "momentum", "Confirm the configured v3 momentum entry mode."),
+                        condition("trend-bias", "Trend score above average", ConditionRole.ENTRY_FILTER, true, "filters", "Require trend score to support the cloud setup."),
+                        condition("regime-skip", "Market regime skip", ConditionRole.REGIME_FILTER, false, "filters", "Block entries in configured market regimes."),
+                        condition("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD, true, "risk", "Avoid entries during cooldown or below confidence/stop constraints."),
+                        condition("lifecycle-exit", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain exit, stale, scale-out, and reversal decisions.")
+                )
+        );
+    }
+
+    private static ReasoningConditionDescriptor condition(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed", label + " blocked the setup");
     }
 }

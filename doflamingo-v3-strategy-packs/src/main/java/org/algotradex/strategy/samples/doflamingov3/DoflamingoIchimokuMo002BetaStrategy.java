@@ -7,11 +7,15 @@ import org.algotradex.platform.contracts.intelligence.TradeIntentExitPolicy;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.common.enums.PositionSide;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
 import java.math.BigDecimal;
@@ -19,6 +23,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
@@ -39,7 +44,7 @@ import static java.util.Objects.requireNonNull;
  * This sample owns signal/intent evidence only. It does not execute trades, route broker orders,
  * enforce fills, reserve capital, or perform portfolio accounting.
  */
-public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStrategy {
+public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
 
     private final EntryMode entryMode;
@@ -131,6 +136,27 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
     }
 
     @Override
+    public String stateSchemaVersion() {
+        return "doflamingo-ichimoku-mo-002-beta-v3-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "structureWeakBars", structureWeakBars,
+                "shortStructureWeakBars", shortStructureWeakBars,
+                "cooldownRemaining", cooldownRemaining
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        structureWeakBars = asInt(state == null ? null : state.get("structureWeakBars"), 0);
+        shortStructureWeakBars = asInt(state == null ? null : state.get("shortStructureWeakBars"), 0);
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+    }
+
+    @Override
     public List<StrategyCapability> lifecycleCapabilities() {
         return List.of(
                 StrategyCapability.LONG_SIGNALS,
@@ -144,6 +170,85 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
                 StrategyCapability.RISK_AWARE_SIZING,
                 StrategyCapability.PARAMETERIZED
         );
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        int index = history.size() - 1;
+        if (context.instrumentPosition().hasPosition()) {
+            return List.of(new ThoughtConditionEvidence("lifecycle-exit", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false,
+                    "A position is open; evaluating exit, scale-out, stale, or reversal rules"));
+        }
+        if (index < DoflamingoIndicatorMath.TREND_MINIMUM_INDEX) {
+            return List.of(new ThoughtConditionEvidence("cloud-quality", "Cloud quality", ConditionRole.REGIME_FILTER, false,
+                    "Waiting for enough bars to compute trend score and cloud state"));
+        }
+        Optional<DoflamingoIndicatorMath.IchimokuSnapshot> maybeIchimoku = DoflamingoIndicatorMath.ichimoku(history);
+        OptionalDouble maybeEma9 = DoflamingoIndicatorMath.closedBarEma(history, index, 9);
+        OptionalDouble maybeTrend = DoflamingoIndicatorMath.closedTrendScore(history, index);
+        OptionalDouble maybeAverage = DoflamingoIndicatorMath.closedTrendAverage(history, index, trendAverageLookback);
+        if (maybeIchimoku.isEmpty() || maybeEma9.isEmpty() || maybeTrend.isEmpty() || maybeAverage.isEmpty()) {
+            return List.of(new ThoughtConditionEvidence("cloud-quality", "Cloud quality", ConditionRole.REGIME_FILTER, false,
+                    "Waiting for Ichimoku, EMA, or trend-score inputs"));
+        }
+        DoflamingoIndicatorMath.IchimokuSnapshot ichimoku = maybeIchimoku.get();
+        BarEvent current = context.currentBar();
+        double close = current.ohlcv().close().doubleValue();
+        double low = current.ohlcv().low().doubleValue();
+        double high = current.ohlcv().high().doubleValue();
+        boolean strictSetup = low > ichimoku.presentSpanB()
+                && maybeEma9.getAsDouble() > ichimoku.presentSpanA()
+                && ichimoku.presentSpanB() > ichimoku.presentSpanA()
+                && ichimoku.futureSpanA() > ichimoku.futureSpanB()
+                && ichimoku.conversionLine() > ichimoku.baseLine()
+                && maybeTrend.getAsDouble() > maybeAverage.getAsDouble()
+                && maybeTrend.getAsDouble() > 0.0d;
+        boolean earlySetup = close > ichimoku.presentSpanB()
+                && ichimoku.futureSpanA() > ichimoku.futureSpanB()
+                && ichimoku.conversionLine() > ichimoku.baseLine()
+                && maybeTrend.getAsDouble() > maybeAverage.getAsDouble()
+                && close > previousHigh(history, index, 5);
+        boolean accepted = switch (entryMode) {
+            case STRICT_BETA -> strictSetup;
+            case EARLY_TRANSITION -> earlySetup;
+            case HYBRID -> strictSetup || earlySetup;
+        };
+        BigDecimal confidence = confidence(strictSetup, earlySetup, close, high, low, ichimoku, maybeTrend.getAsDouble(), maybeAverage.getAsDouble(), DoflamingoIndicatorMath.atr(history, index, atrPeriod));
+        boolean regimeAllowed = !DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes);
+        return List.of(
+                new ThoughtConditionEvidence("cloud-quality", "Cloud quality", ConditionRole.REGIME_FILTER, strictSetup || earlySetup,
+                        strictSetup || earlySetup ? "Cloud structure supports the v3 entry mode" : "Cloud structure does not support the configured entry mode"),
+                new ThoughtConditionEvidence("momentum", "Momentum confirmation", ConditionRole.ENTRY_TRIGGER, accepted,
+                        accepted ? "Configured Ichimoku momentum mode passed" : "Momentum confirmation is not complete"),
+                new ThoughtConditionEvidence("trend-bias", "Trend score above average", ConditionRole.ENTRY_FILTER, maybeTrend.getAsDouble() > maybeAverage.getAsDouble(),
+                        "Trend score is " + (maybeTrend.getAsDouble() > maybeAverage.getAsDouble() ? "above" : "not above") + " its average"),
+                new ThoughtConditionEvidence("regime-skip", "Market regime skip", ConditionRole.REGIME_FILTER, regimeAllowed,
+                        regimeAllowed ? "Market regime permits entries" : "Configured market regime blocks entries"),
+                new ThoughtConditionEvidence("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD,
+                        cooldownRemaining <= 0 && confidence.compareTo(minConfidence) >= 0,
+                        cooldownRemaining > 0 ? "Cooldown is active" : confidence.compareTo(minConfidence) >= 0 ? "Confidence clears minimum" : "Confidence is below minimum")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        if (context.instrumentHistory().size() - 1 < DoflamingoIndicatorMath.TREND_MINIMUM_INDEX) {
+            return "cloud";
+        }
+        if (cooldownRemaining > 0) {
+            return "risk";
+        }
+        if (DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes)) {
+            return "filters";
+        }
+        return evaluateReasoning(context).stream().anyMatch(evidence -> evidence.conditionId().equals("momentum") && evidence.passed())
+                ? "risk"
+                : "momentum";
     }
 
     @Override
@@ -773,6 +878,10 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
         STRICT_BETA,
         EARLY_TRANSITION,
         HYBRID
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
     }
 
     private enum StopMode {

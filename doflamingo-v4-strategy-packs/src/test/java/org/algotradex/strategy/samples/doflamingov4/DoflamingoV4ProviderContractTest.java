@@ -1,5 +1,6 @@
 package org.algotradex.strategy.samples.doflamingov4;
 
+import org.algotradex.platform.contracts.simulation.ResumeClass;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
@@ -8,7 +9,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,6 +74,39 @@ class DoflamingoV4ProviderContractTest {
         assertThat(effective.decimal("maxPortfolioDrawdownPct", BigDecimal.ONE)).isEqualByComparingTo("0.0");
         assertThat(effective.bool("sessionGating", true)).isFalse();
         assertThat(effective.stringList("skipMarketRegimes", List.of("unexpected"))).isEmpty();
+    }
+
+    @Test
+    void trendV4DescriptorCarriesSimulationLabReasoningAndResumePolicies() {
+        var descriptor = trendProvider.descriptor();
+
+        assertThat(descriptor.reasoningModel().phases())
+                .extracting("phaseId")
+                .containsExactly("reset", "reversal", "filters", "risk", "lifecycle");
+        assertThat(descriptor.reasoningModel().conditions())
+                .extracting("conditionId")
+                .contains(
+                        "psar-direction",
+                        "momentum-reset",
+                        "cloud-reversal",
+                        "trend-filter",
+                        "entry-filters",
+                        "runtime-risk",
+                        "lifecycle-exit"
+                );
+
+        Map<String, StrategyParameterDefinition> definitions = descriptor.parameterSchema().parameters().stream()
+                .collect(Collectors.toMap(StrategyParameterDefinition::key, definition -> definition));
+        assertThat(definitions).allSatisfy((key, definition) -> assertThat(definition.resumePolicy()).as(key).isNotNull());
+        assertThat(definitions.get("macdFastPeriod").resumePolicy().resumeClass()).isEqualTo(ResumeClass.LOOKBACK);
+        assertThat(definitions.get("macdSlowPeriod").resumePolicy().resumeClass()).isEqualTo(ResumeClass.LOOKBACK);
+        assertThat(definitions.get("macdSignalPeriod").resumePolicy().resumeClass()).isEqualTo(ResumeClass.LOOKBACK);
+        assertThat(definitions.get("atrPeriod").resumePolicy().resumeClass()).isEqualTo(ResumeClass.LOOKBACK);
+        assertThat(definitions.get("requireRsiExtremeWithinBars").resumePolicy().resumeClass()).isEqualTo(ResumeClass.LOOKBACK);
+        assertThat(definitions.get("structureExitConfirmBars").resumePolicy().resumeClass()).isEqualTo(ResumeClass.LOOKBACK);
+        assertThat(definitions.get("minConfidence").resumePolicy().resumeClass()).isEqualTo(ResumeClass.FORWARD_ONLY);
+        assertThat(definitions.get("cooldownBars").resumePolicy().resumeClass()).isEqualTo(ResumeClass.FORWARD_ONLY);
+        assertThat(definitions.get("allowShorts").resumePolicy().resumeClass()).isEqualTo(ResumeClass.FORWARD_ONLY);
     }
 
     @Test

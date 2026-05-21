@@ -1,9 +1,14 @@
 package org.algotradex.strategy.samples.doflamingov3;
 
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstantiationContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationIssue;
@@ -158,7 +163,7 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
             new StrategyParameterDefinition(MAX_SHORT_SCALE_INS, StrategyParameterType.INTEGER, "Max Short Scale Ins",
                     "Maximum accepted short scale-in intents per position.",
                     true, 1, BigDecimal.ZERO, BigDecimal.valueOf(10), List.of())
-    ));
+    ).stream().map(DoflamingoMultiIndicatorV6TrendReversalStrategyProvider::withResumePolicy).toList());
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
             new StrategyIdentity(STRATEGY_ID, STRATEGY_VERSION),
@@ -193,7 +198,8 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                     DoflamingoChartStudies.unsupported("psar", "PSAR", "trend-reversal-trigger", Map.of(), true),
                     DoflamingoChartStudies.ema(50, "adaptive-trend-filter", false),
                     DoflamingoChartStudies.unsupported("atr", "ATR", "protective-stop-context", Map.of("period", 14), false)
-            )
+            ),
+            reasoningModel()
     );
 
     @Override
@@ -286,5 +292,52 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategyProvider imple
                 effective.decimal(SHORT_SCALE_IN_AT_R, BigDecimal.valueOf(0.50)),
                 effective.integer(MAX_SHORT_SCALE_INS, 1)
         );
+    }
+
+    private static StrategyParameterDefinition withResumePolicy(StrategyParameterDefinition definition) {
+        StrategyParameterResumePolicy policy = switch (definition.key()) {
+            case MACD_FAST_PERIOD -> StrategyParameterResumePolicy.lookback(100);
+            case MACD_SLOW_PERIOD -> StrategyParameterResumePolicy.lookback(200);
+            case MACD_SIGNAL_PERIOD -> StrategyParameterResumePolicy.lookback(100);
+            case ATR_PERIOD -> StrategyParameterResumePolicy.lookback(100);
+            case MIN_CONFIDENCE, STOCH_OVERBOUGHT, STOCH_OVERSOLD, TREND_FILTER_MODE, ADAPTIVE_MOMENTUM_MODE,
+                    STOP_MODE, STOP_LOSS_PCT, MIN_STOP_PCT, MAX_STOP_PCT, ATR_STOP_MULTIPLE,
+                    MAX_HOLDING_BARS, STALE_BARS, STALE_MIN_R, ENABLE_SCALE_OUT, SCALE_OUT_AT_R,
+                    SCALE_OUT_FRACTION, TRAIL_AFTER_SCALE_OUT, RISK_FRACTION, SKIP_MARKET_REGIMES,
+                    ALLOW_SHORTS, SHORT_CLOUD_MODE, ALLOW_REVERSAL, ALLOW_SHORT_SCALE_IN,
+                    SHORT_SCALE_IN_AT_R, MAX_SHORT_SCALE_INS -> StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.lookback(null);
+        };
+        return new StrategyParameterDefinition(definition.key(), definition.type(), definition.label(), definition.description(),
+                definition.required(), definition.defaultValue(), definition.min(), definition.max(), definition.allowedValues(), policy);
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                STRATEGY_VERSION + "-reasoning-v1",
+                "Doflamingo v3 Multi V6 explains PSAR reversal, MACD/Stoch reset, cloud reclaim, adaptive filters, and runtime risk controls without changing the entry logic.",
+                "Doflamingo v3 Multi phase={phase}; blocked={blocked_by}.",
+                List.of(
+                        new ReasoningPhaseDescriptor("reset", "Reset", "Wait for momentum reset evidence."),
+                        new ReasoningPhaseDescriptor("reversal", "Reversal", "Confirm PSAR and cloud reversal context."),
+                        new ReasoningPhaseDescriptor("filters", "Filters", "Apply trend and market-regime filters."),
+                        new ReasoningPhaseDescriptor("risk", "Risk", "Check confidence, stop, and runtime risk constraints."),
+                        new ReasoningPhaseDescriptor("lifecycle", "Lifecycle", "Explain exits, reversals, and scale actions while a position is open.")
+                ),
+                List.of(
+                        condition("psar-direction", "PSAR direction", ConditionRole.ENTRY_TRIGGER, true, "reversal", "Use PSAR direction as the reversal trigger."),
+                        condition("momentum-reset", "Momentum reset", ConditionRole.ENTRY_TRIGGER, true, "reset", "Require MACD or Stoch RSI reset evidence."),
+                        condition("cloud-reversal", "Cloud reversal", ConditionRole.ENTRY_FILTER, true, "reversal", "Confirm price has reclaimed or broken the cloud."),
+                        condition("trend-filter", "Adaptive trend filter", ConditionRole.REGIME_FILTER, true, "filters", "Avoid reversals without EMA/trend support."),
+                        condition("entry-filters", "Entry filters", ConditionRole.ENTRY_FILTER, true, "filters", "Apply market-regime and side gates."),
+                        condition("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD, true, "risk", "Apply confidence, stop, and risk controls."),
+                        condition("lifecycle-exit", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain exit, scale, and reversal decisions.")
+                )
+        );
+    }
+
+    private static ReasoningConditionDescriptor condition(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed", label + " blocked the setup");
     }
 }

@@ -4,15 +4,25 @@ import org.algotradex.platform.contracts.common.enums.StrategyEntryType;
 import org.algotradex.platform.contracts.common.enums.StrategyExitRuleType;
 import org.algotradex.platform.contracts.common.enums.StrategySizingType;
 import org.algotradex.platform.contracts.common.enums.StrategyTradeAction;
+import org.algotradex.platform.contracts.common.ids.ReplayId;
+import org.algotradex.platform.contracts.common.ids.RunId;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextSnapshot;
+import org.algotradex.platform.core.api.dto.common.replay.MarketDataVisibilitySnapshot;
+import org.algotradex.platform.core.api.dto.common.replay.ReplayRunMetadata;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
+import org.algotradex.platform.core.api.enums.replay.ReplayMode;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
+import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
+import org.algotradex.platform.core.strategy.simulation.SimulationStepper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
@@ -20,6 +30,12 @@ import java.util.ServiceLoader;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
+    private static final ReplayRunMetadata METADATA = new ReplayRunMetadata(
+            new RunId("run-doflamingo-v3-stepper-parity-test"),
+            new ReplayId("replay-doflamingo-v3-stepper-parity-test"),
+            ReplayMode.FULL_RUN
+    );
+
     private final DoflamingoMultiIndicatorV6TrendReversalStrategyProvider provider =
             new DoflamingoMultiIndicatorV6TrendReversalStrategyProvider();
 
@@ -151,6 +167,25 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
                         "multi-v6-v3.confidence-threshold"
                 );
         assertThat(intent.reason().evidence()).contains("adaptiveMomentumMode=ADAPTIVE_CONFIRMATION");
+    }
+
+    @Test
+    void simulationStepperEmissionsMatchDirectReplayGoldenActions() {
+        StrategyParameters parameters = new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "trendFilterMode", "SOFT",
+                "adaptiveMomentumMode", "ADAPTIVE_CONFIRMATION"
+        ));
+        List<BarEvent> bars = DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars();
+
+        List<String> direct = replayDirectActions(parameters, bars);
+        List<String> stepped = replayStepperActions(parameters, bars);
+
+        assertThat(direct).startsWith("ENTER_LONG");
+        assertThat(stepped).containsExactly("ENTER_LONG", "SCALE_OUT_LONG");
     }
 
     @Test
@@ -560,6 +595,35 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
             }
         }
         return null;
+    }
+
+    private List<String> replayDirectActions(StrategyParameters parameters, List<BarEvent> bars) {
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(parameters, null);
+        List<String> actions = new ArrayList<>();
+        for (int index = 1; index <= bars.size(); index++) {
+            strategy.onBarIntent(DoflamingoStrategyTestSupport.context(bars.subList(0, index))).tradeIntents().stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
+    }
+
+    private List<String> replayStepperActions(StrategyParameters parameters, List<BarEvent> bars) {
+        SimulationStepper stepper = new SimulationStepper(
+                List.of((TradeSignalStrategy) provider.create(parameters, null)),
+                METADATA,
+                256,
+                Clock.systemUTC(),
+                DoflamingoMultiIndicatorV6TrendReversalStrategyProvider.STRATEGY_VERSION,
+                parameters
+        );
+        List<String> actions = new ArrayList<>();
+        for (BarEvent bar : bars) {
+            stepper.step(bar, MarketDataVisibilitySnapshot.empty(), MarketContextSnapshot.empty()).result().emittedTradeIntents().stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
     }
 
     private static org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult firstIntent(

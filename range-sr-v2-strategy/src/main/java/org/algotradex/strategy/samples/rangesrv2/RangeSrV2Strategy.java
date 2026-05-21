@@ -229,6 +229,34 @@ public final class RangeSrV2Strategy implements TradeIntentStrategy, ResumableSt
         );
     }
 
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        BarEvent current = context.currentBar();
+        if (context.instrumentPosition().hasPosition()) {
+            return "risk";
+        }
+        Instant cooldownUntil = cooldownUntilByInstrument.get(current.instrument().instrumentId());
+        if (cooldownUntil != null && current.occurredAt().isBefore(cooldownUntil)) {
+            return "risk";
+        }
+        String executionTimeframe = executionTimeframe(current);
+        List<BarEvent> executionBars = last(context.history(executionTimeframe), params.ltfLookback());
+        List<BarEvent> bars4h = last(context.history("H4"), params.htfLookback());
+        if (bars4h.size() < 50) {
+            return "regime";
+        }
+        if (executionBars.size() < 20) {
+            return "trigger";
+        }
+        Optional<Setup> setup = evaluate(current, bars4h, executionBars, executionTimeframe);
+        if (setup.isPresent()) {
+            return "risk";
+        }
+        BigDecimal adx4h = adx(bars4h, ADX_PERIOD);
+        return adx4h.compareTo(params.minTrendAdx()) < 0 ? "regime" : "location";
+    }
+
     static BigDecimal ema(List<BarEvent> bars, int period) {
         if (bars.size() < period) {
             return BigDecimal.ZERO;

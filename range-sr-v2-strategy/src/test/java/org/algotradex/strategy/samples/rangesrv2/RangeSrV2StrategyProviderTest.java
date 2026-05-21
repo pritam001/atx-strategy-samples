@@ -206,6 +206,7 @@ class RangeSrV2StrategyProviderTest {
         assertThat(restoredNext.result()).usingRecursiveComparison().isEqualTo(freshNext.result());
         assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
         assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+        assertThat(restored.currentState().currentPhase()).isNotBlank().isIn(declaredPhaseIds());
     }
 
     @Test
@@ -258,6 +259,12 @@ class RangeSrV2StrategyProviderTest {
                 RangeSrV2StrategyProvider.STRATEGY_VERSION,
                 parameters
         );
+    }
+
+    private List<String> declaredPhaseIds() {
+        return provider.descriptor().reasoningModel().phases().stream()
+                .map(org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor::phaseId)
+                .toList();
     }
 
     private static MarketDataVisibilitySnapshot visibility(BarEvent current, List<BarEvent> h4) {

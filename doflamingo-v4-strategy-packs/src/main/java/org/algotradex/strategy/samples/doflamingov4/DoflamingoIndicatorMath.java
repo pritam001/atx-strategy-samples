@@ -599,6 +599,71 @@ final class DoflamingoIndicatorMath {
                                double psar, double previousPsar) {
     }
 
+    record MultiIndicatorTrackerState(
+            RollingMidpointState conversion,
+            RollingMidpointState base,
+            RollingMidpointState spanB,
+            List<Double> displacedSpanA,
+            List<Double> displacedSpanB,
+            RollingIndicators.MacdState macd,
+            LaggedStochRsiState stochRsi,
+            RollingPsarState psar,
+            int index,
+            double macdHistogram,
+            double previousMacdHistogram,
+            double secondPreviousMacdHistogram,
+            double macdSignal
+    ) {
+        MultiIndicatorTrackerState {
+            displacedSpanA = List.copyOf(displacedSpanA == null ? List.of() : displacedSpanA);
+            displacedSpanB = List.copyOf(displacedSpanB == null ? List.of() : displacedSpanB);
+        }
+    }
+
+    record LaggedStochRsiState(
+            RollingIndicators.SimpleRsiState rsi,
+            RollingIndicators.SimpleMovingAverageState kAverage,
+            RollingIndicators.SimpleMovingAverageState dAverage,
+            List<Double> rsiWindow,
+            double k,
+            double previousK,
+            double d,
+            double previousD
+    ) {
+        LaggedStochRsiState {
+            rsiWindow = List.copyOf(rsiWindow == null ? List.of() : rsiWindow);
+        }
+    }
+
+    record RollingPsarState(
+            IndicatorBar first,
+            IndicatorBar previous,
+            IndicatorBar secondPrevious,
+            int index,
+            boolean uptrend,
+            double acceleration,
+            double extreme,
+            double sar,
+            double current
+    ) {
+    }
+
+    record RollingMidpointState(List<IndicatorBar> window) {
+        RollingMidpointState {
+            window = List.copyOf(window == null ? List.of() : window);
+        }
+    }
+
+    record IndicatorBar(double high, double low, double close) {
+        private static IndicatorBar from(BarEvent bar) {
+            return new IndicatorBar(
+                    DoflamingoIndicatorMath.high(bar),
+                    DoflamingoIndicatorMath.low(bar),
+                    DoflamingoIndicatorMath.close(bar)
+            );
+        }
+    }
+
     static final class MultiIndicatorTracker {
         private static final int STOCH_RSI_PERIOD = 14;
         private static final int STOCHASTIC_PERIOD = 14;
@@ -698,6 +763,42 @@ final class DoflamingoIndicatorMath {
             macdHistogram = currentHistogram;
             macdSignal = currentSignal;
         }
+
+        MultiIndicatorTrackerState snapshotState() {
+            return new MultiIndicatorTrackerState(
+                    conversion.snapshotState(),
+                    base.snapshotState(),
+                    spanB.snapshotState(),
+                    List.copyOf(displacedSpanA),
+                    List.copyOf(displacedSpanB),
+                    macd.snapshotState(),
+                    stochRsi.snapshotState(),
+                    psar.snapshotState(),
+                    index,
+                    macdHistogram,
+                    previousMacdHistogram,
+                    secondPreviousMacdHistogram,
+                    macdSignal
+            );
+        }
+
+        void restoreState(MultiIndicatorTrackerState state) {
+            conversion.restoreState(state.conversion());
+            base.restoreState(state.base());
+            spanB.restoreState(state.spanB());
+            displacedSpanA.clear();
+            displacedSpanA.addAll(state.displacedSpanA());
+            displacedSpanB.clear();
+            displacedSpanB.addAll(state.displacedSpanB());
+            macd.restoreState(state.macd());
+            stochRsi.restoreState(state.stochRsi());
+            psar.restoreState(state.psar());
+            index = state.index();
+            macdHistogram = state.macdHistogram();
+            previousMacdHistogram = state.previousMacdHistogram();
+            secondPreviousMacdHistogram = state.secondPreviousMacdHistogram();
+            macdSignal = state.macdSignal();
+        }
     }
 
     private static final class LaggedStochRsi {
@@ -750,12 +851,37 @@ final class DoflamingoIndicatorMath {
             d = rawD.orElse(Double.NaN);
             return new StochRsiPoint(k, previousK, d, previousD);
         }
+
+        private LaggedStochRsiState snapshotState() {
+            return new LaggedStochRsiState(
+                    rsi.snapshotState(),
+                    kAverage.snapshotState(),
+                    dAverage.snapshotState(),
+                    List.copyOf(rsiWindow),
+                    k,
+                    previousK,
+                    d,
+                    previousD
+            );
+        }
+
+        private void restoreState(LaggedStochRsiState state) {
+            rsi.restoreState(state.rsi());
+            kAverage.restoreState(state.kAverage());
+            dAverage.restoreState(state.dAverage());
+            rsiWindow.clear();
+            rsiWindow.addAll(state.rsiWindow());
+            k = state.k();
+            previousK = state.previousK();
+            d = state.d();
+            previousD = state.previousD();
+        }
     }
 
     private static final class RollingPsar {
-        private BarEvent first;
-        private BarEvent previous;
-        private BarEvent secondPrevious;
+        private IndicatorBar first;
+        private IndicatorBar previous;
+        private IndicatorBar secondPrevious;
         private int index = -1;
         private boolean uptrend;
         private double acceleration;
@@ -765,68 +891,85 @@ final class DoflamingoIndicatorMath {
 
         private Optional<PsarPoint> update(BarEvent bar) {
             index++;
+            IndicatorBar currentBar = IndicatorBar.from(bar);
             if (index == 0) {
-                first = bar;
-                previous = bar;
+                first = currentBar;
+                previous = currentBar;
                 return Optional.empty();
             }
             if (index == 1) {
-                uptrend = close(bar) >= close(first);
+                uptrend = currentBar.close() >= first.close();
                 acceleration = 0.02d;
                 extreme = uptrend
-                        ? Math.max(high(first), high(bar))
-                        : Math.min(low(first), low(bar));
+                        ? Math.max(first.high(), currentBar.high())
+                        : Math.min(first.low(), currentBar.low());
                 sar = uptrend
-                        ? Math.min(low(first), low(bar))
-                        : Math.max(high(first), high(bar));
+                        ? Math.min(first.low(), currentBar.low())
+                        : Math.max(first.high(), currentBar.high());
                 current = sar;
                 secondPrevious = first;
-                previous = bar;
+                previous = currentBar;
                 return Optional.empty();
             }
 
             double prior = current;
             sar = sar + acceleration * (extreme - sar);
             if (uptrend) {
-                sar = Math.min(sar, Math.min(low(previous), low(secondPrevious)));
-                if (low(bar) < sar) {
+                sar = Math.min(sar, Math.min(previous.low(), secondPrevious.low()));
+                if (currentBar.low() < sar) {
                     uptrend = false;
                     sar = extreme;
-                    extreme = low(bar);
+                    extreme = currentBar.low();
                     acceleration = 0.02d;
-                } else if (high(bar) > extreme) {
-                    extreme = high(bar);
+                } else if (currentBar.high() > extreme) {
+                    extreme = currentBar.high();
                     acceleration = Math.min(0.2d, acceleration + 0.02d);
                 }
             } else {
-                sar = Math.max(sar, Math.max(high(previous), high(secondPrevious)));
-                if (high(bar) > sar) {
+                sar = Math.max(sar, Math.max(previous.high(), secondPrevious.high()));
+                if (currentBar.high() > sar) {
                     uptrend = true;
                     sar = extreme;
-                    extreme = high(bar);
+                    extreme = currentBar.high();
                     acceleration = 0.02d;
-                } else if (low(bar) < extreme) {
-                    extreme = low(bar);
+                } else if (currentBar.low() < extreme) {
+                    extreme = currentBar.low();
                     acceleration = Math.min(0.2d, acceleration + 0.02d);
                 }
             }
             current = sar;
             secondPrevious = previous;
-            previous = bar;
+            previous = currentBar;
             return Optional.of(new PsarPoint(current, prior));
+        }
+
+        private RollingPsarState snapshotState() {
+            return new RollingPsarState(first, previous, secondPrevious, index, uptrend, acceleration, extreme, sar, current);
+        }
+
+        private void restoreState(RollingPsarState state) {
+            first = state.first();
+            previous = state.previous();
+            secondPrevious = state.secondPrevious();
+            index = state.index();
+            uptrend = state.uptrend();
+            acceleration = state.acceleration();
+            extreme = state.extreme();
+            sar = state.sar();
+            current = state.current();
         }
     }
 
     private static final class RollingMidpoint {
         private final int period;
-        private final ArrayDeque<BarEvent> window = new ArrayDeque<>();
+        private final ArrayDeque<IndicatorBar> window = new ArrayDeque<>();
 
         private RollingMidpoint(int period) {
             this.period = period;
         }
 
         private OptionalDouble update(BarEvent bar) {
-            window.addLast(bar);
+            window.addLast(IndicatorBar.from(bar));
             if (window.size() > period) {
                 window.removeFirst();
             }
@@ -835,11 +978,20 @@ final class DoflamingoIndicatorMath {
             }
             double high = Double.NEGATIVE_INFINITY;
             double low = Double.POSITIVE_INFINITY;
-            for (BarEvent candidate : window) {
-                high = Math.max(high, high(candidate));
-                low = Math.min(low, low(candidate));
+            for (IndicatorBar candidate : window) {
+                high = Math.max(high, candidate.high());
+                low = Math.min(low, candidate.low());
             }
             return OptionalDouble.of((high + low) / 2.0d);
+        }
+
+        private RollingMidpointState snapshotState() {
+            return new RollingMidpointState(List.copyOf(window));
+        }
+
+        private void restoreState(RollingMidpointState state) {
+            window.clear();
+            window.addAll(state.window());
         }
     }
 

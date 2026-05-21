@@ -6,6 +6,8 @@ import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentConditionEvidence;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
@@ -15,7 +17,9 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDef
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 
@@ -55,7 +59,16 @@ public final class IndiaVwapReversionStrategyProvider implements StrategyProvide
                     PerplexityStrategySupport.study("session-vwap", "Session VWAP", "mean-reversion-anchor", Map.of("session", "Asia/Kolkata"), "Internal closed-bar session VWAP."),
                     PerplexityStrategySupport.study("vwap-band", "VWAP Band", "entry-zone", Map.of("bandPct", "0.006"), "Percentage envelope around VWAP."),
                     PerplexityStrategySupport.study("atr", "ATR", "risk", Map.of("period", 14), "Closed-bar ATR stop distance.")
-            )
+            ),
+            PerplexityStrategySupport.reasoningModel(STRATEGY_ID,
+                    "VWAP reversion waits for session VWAP/ATR readiness, an outer-band rejection, and relative-volume confirmation.",
+                    List.of(
+                            PerplexityStrategySupport.descriptor("vwap.session-ready", "Session VWAP and ATR are ready", ConditionRole.ENTRY_FILTER, true, "warmup", "Do not trade before VWAP and ATR are available."),
+                            PerplexityStrategySupport.descriptor("vwap.lower-band-reclaim", "Price rejected outer VWAP band", ConditionRole.ENTRY_TRIGGER, true, "signal", "Require a rejection from the configured VWAP band."),
+                            PerplexityStrategySupport.descriptor("vwap.volume", "Relative volume shows participation", ConditionRole.ENTRY_FILTER, true, "signal", "Require enough participation."),
+                            PerplexityStrategySupport.descriptor("vwap.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain invalidation and time exits."),
+                            PerplexityStrategySupport.descriptor("vwap.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT, true, "cooldown", "Avoid immediate re-entry after lifecycle actions.")
+                    ))
     );
 
     @Override
@@ -107,7 +120,7 @@ record IndiaVwapReversionParameters(
     }
 }
 
-final class IndiaVwapReversionStrategy implements TradeIntentStrategy {
+final class IndiaVwapReversionStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final int FOLLOW_THROUGH_WINDOW_BARS = 3;
 
     private final IndiaVwapReversionParameters params;
@@ -122,6 +135,28 @@ final class IndiaVwapReversionStrategy implements TradeIntentStrategy {
     @Override
     public String strategyId() {
         return IndiaVwapReversionStrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "india-vwap-reversion-v1-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "cooldownRemaining", cooldownRemaining,
+                "activeDirection", activeDirection == null ? "" : activeDirection.name(),
+                "activeVwap", activeVwap
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+        String direction = String.valueOf(state == null ? "" : state.getOrDefault("activeDirection", ""));
+        activeDirection = direction.isBlank() ? null : Direction.valueOf(direction);
+        activeVwap = asDouble(state == null ? null : state.get("activeVwap"), Double.NaN);
     }
 
     @Override
@@ -217,6 +252,56 @@ final class IndiaVwapReversionStrategy implements TradeIntentStrategy {
         return result;
     }
 
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return List.of(PerplexityStrategySupport.evidence("vwap.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER,
+                    activeDirection != null || context.instrumentPosition().barsHeld() >= params.maxHoldingBars(), "Lifecycle exit is being evaluated", "No lifecycle exit yet"));
+        }
+        if (cooldownRemaining > 0) {
+            return List.of(PerplexityStrategySupport.evidence("vwap.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT,
+                    false, "Cooldown is clear", "Cooldown is still active"));
+        }
+        BarEvent current = context.currentBar();
+        List<BarEvent> bars = context.instrumentHistory();
+        List<BarEvent> sessionBars = BarMath.sameIndiaSession(bars, current);
+        if (sessionBars.isEmpty()) {
+            return List.of(PerplexityStrategySupport.evidence("vwap.session-ready", "Session VWAP and ATR are ready", ConditionRole.ENTRY_FILTER,
+                    false, "VWAP and ATR are ready", "Session has no bars yet"));
+        }
+        double vwap = BarMath.sessionVwap(sessionBars);
+        double lowerBand = vwap * (1.0d - params.vwapBandPct());
+        double upperBand = vwap * (1.0d + params.vwapBandPct());
+        double atr = BarMath.atr(bars, params.atrPeriod());
+        double averageVolume = BarMath.averageVolumeBeforeCurrent(bars, params.volumeLookbackBars());
+        double relativeVolume = BarMath.volume(current) / averageVolume;
+        double close = BarMath.close(current);
+        boolean sessionReady = Double.isFinite(vwap) && Double.isFinite(atr) && atr > 0.0d;
+        boolean reclaim = BarMath.low(current) <= lowerBand && close > BarMath.open(current)
+                || params.allowShorts() && BarMath.high(current) >= upperBand && close < BarMath.open(current);
+        boolean volumeReady = Double.isFinite(relativeVolume) && relativeVolume >= params.minRelativeVolume();
+        return List.of(
+                PerplexityStrategySupport.evidence("vwap.session-ready", "Session VWAP and ATR are ready", ConditionRole.ENTRY_FILTER, sessionReady, "VWAP and ATR are ready", "VWAP or ATR is not ready"),
+                PerplexityStrategySupport.evidence("vwap.lower-band-reclaim", "Price rejected outer VWAP band", ConditionRole.ENTRY_TRIGGER, reclaim, "Price rejected an outer VWAP band", "No VWAP band rejection yet"),
+                PerplexityStrategySupport.evidence("vwap.volume", "Relative volume shows participation", ConditionRole.ENTRY_FILTER, volumeReady, "Relative volume shows participation", "Relative volume is below threshold")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        if (cooldownRemaining > 0) {
+            return "cooldown";
+        }
+        List<ThoughtConditionEvidence> evidence = evaluateReasoning(context);
+        if (evidence.stream().anyMatch(item -> item.conditionId().equals("vwap.session-ready") && !item.passed())) {
+            return "warmup";
+        }
+        return evidence.stream().anyMatch(item -> item.conditionId().equals("vwap.lower-band-reclaim") && item.passed()) ? "signal" : "scanning";
+    }
+
     private StrategyIntentResult invalidationExit(StrategyExecutionContext context) {
         if (activeDirection == null) {
             return StrategyIntentResult.empty();
@@ -279,5 +364,13 @@ final class IndiaVwapReversionStrategy implements TradeIntentStrategy {
                 0.60d
                         + Math.min(0.18d, Math.abs(close - vwap) / Math.max(vwap, 0.0001d))
                         + Math.min(0.10d, (relativeVolume - params.minRelativeVolume()) * 0.04d));
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
+    }
+
+    private static double asDouble(Object value, double fallback) {
+        return value instanceof Number number ? number.doubleValue() : fallback;
     }
 }

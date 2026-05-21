@@ -63,6 +63,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
     private final SideRuntime longRuntime = new SideRuntime();
     private final SideRuntime shortRuntime = new SideRuntime();
     private int processedBars;
+    private String lastProcessedEventId = "";
 
     EmaTrendStructurePullbackStrategy(EmaTrendStructurePullbackParameters params) {
         this.params = requireNonNull(params, "params");
@@ -75,13 +76,14 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
 
     @Override
     public String stateSchemaVersion() {
-        return "ema-trend-structure-pullback-v2-state-v1";
+        return "ema-trend-structure-pullback-v2-state-v2";
     }
 
     @Override
     public Map<String, Object> snapshotState() {
         return Map.of(
                 "processedBars", processedBars,
+                "lastProcessedEventId", lastProcessedEventId,
                 "longRuntime", sideRuntimeState(longRuntime),
                 "shortRuntime", sideRuntimeState(shortRuntime)
         );
@@ -90,6 +92,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
     @Override
     public void restoreState(Map<String, Object> state) {
         processedBars = asInt(state == null ? null : state.get("processedBars"), 0);
+        lastProcessedEventId = asString(state == null ? null : state.get("lastProcessedEventId"));
         restoreSideRuntime(longRuntime, state == null ? null : state.get("longRuntime"));
         restoreSideRuntime(shortRuntime, state == null ? null : state.get("shortRuntime"));
     }
@@ -117,10 +120,6 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         if (history.isEmpty()) {
             return StrategyIntentResult.empty();
         }
-        if (history.size() < processedBars) {
-            resetRuntime();
-        }
-
         EmaSeries series = EmaSeries.from(history, params);
         int finalIndex = history.size() - 1;
         if (!series.readyAt(finalIndex, params)) {
@@ -129,22 +128,26 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
 
         StrategyInstrumentPosition position = context.instrumentPosition();
         if (position.hasPosition()) {
-            processedBars = history.size();
+            int startIndex = nextUnprocessedIndex(history);
+            for (int index = startIndex; index <= finalIndex; index++) {
+                markProcessed(history.get(index));
+            }
             EmaSnapshot snapshot = EmaSnapshot.from(series, finalIndex, params);
             return lifecycleIntent(context, series, snapshot, position);
         }
 
-        if (history.size() <= processedBars) {
+        int startIndex = nextUnprocessedIndex(history);
+        if (startIndex > finalIndex) {
             return StrategyIntentResult.empty();
         }
 
         Optional<SetupCandidate> latestCandidate = Optional.empty();
-        for (int index = processedBars; index <= finalIndex; index++) {
+        for (int index = startIndex; index <= finalIndex; index++) {
             Optional<SetupCandidate> candidate = processIndex(series, index);
             if (candidate.isPresent() && index == finalIndex) {
                 latestCandidate = candidate;
             }
-            processedBars = index + 1;
+            markProcessed(history.get(index));
         }
         if (latestCandidate.isEmpty()) {
             return StrategyIntentResult.empty();
@@ -196,7 +199,7 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                             "Lifecycle checks are active for the open position.")
             );
         }
-        Optional<SetupCandidate> candidate = processIndex(series, finalIndex);
+        Optional<SetupCandidate> candidate = evaluateCandidateWithoutAdvancing(series, finalIndex);
         boolean trendReady = snapshot.trendStructure() == TrendStructure.CLEAN_UPTREND
                 || snapshot.trendStructure() == TrendStructure.CLEAN_DOWNTREND
                 || snapshot.trendStructure() == TrendStructure.EARLY_UPTREND
@@ -230,6 +233,31 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                 new ThoughtConditionEvidence("cooldown", "Cooldown and position context", ConditionRole.POSITION_CONTEXT, true,
                         "No open position blocks a new setup.")
         );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        if (history.isEmpty()) {
+            return "trend";
+        }
+        EmaSeries series = EmaSeries.from(history, params);
+        int finalIndex = history.size() - 1;
+        if (!series.readyAt(finalIndex, params)) {
+            return "trend";
+        }
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        if (longRuntime.state() == SignalState.SIGNAL_EMITTED || shortRuntime.state() == SignalState.SIGNAL_EMITTED) {
+            return "lifecycle";
+        }
+        if (longRuntime.state() == SignalState.PULLBACK_ARMED || shortRuntime.state() == SignalState.PULLBACK_ARMED) {
+            return "pullback";
+        }
+        EmaSnapshot snapshot = EmaSnapshot.from(series, finalIndex, params);
+        return trendStructureReady(snapshot.trendStructure()) ? "pullback" : "trend";
     }
 
     @Override
@@ -516,6 +544,15 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
                         .thenComparing(candidate -> candidate.kind().priority()));
         selected.ifPresent(candidate -> runtime(candidate.direction()).markEmitted(candidate.anchorIndex(), params.cooldownBars()));
         return selected;
+    }
+
+    private Optional<SetupCandidate> evaluateCandidateWithoutAdvancing(EmaSeries series, int index) {
+        Map<String, Object> checkpoint = snapshotState();
+        try {
+            return processIndex(series, index);
+        } finally {
+            restoreState(checkpoint);
+        }
     }
 
     private void resetInvalidatedSideState(EmaSnapshot snapshot) {
@@ -1026,8 +1063,33 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
 
     private void resetRuntime() {
         processedBars = 0;
+        lastProcessedEventId = "";
         longRuntime.resetAll();
         shortRuntime.resetAll();
+    }
+
+    private int nextUnprocessedIndex(List<BarEvent> history) {
+        if (!lastProcessedEventId.isBlank()) {
+            for (int index = history.size() - 1; index >= 0; index--) {
+                if (lastProcessedEventId.equals(history.get(index).eventId().value())) {
+                    return index + 1;
+                }
+            }
+            if (processedBars > history.size()) {
+                // Retained Simulation Lab windows may omit the checkpoint anchor. In that case,
+                // the only bar guaranteed to be post-checkpoint is the current tail bar.
+                return history.size() - 1;
+            }
+        }
+        if (processedBars <= 0) {
+            return 0;
+        }
+        return processedBars <= history.size() ? processedBars : history.size() - 1;
+    }
+
+    private void markProcessed(BarEvent bar) {
+        processedBars++;
+        lastProcessedEventId = bar.eventId().value();
     }
 
     private List<String> commonEvidence(EmaSnapshot snapshot, List<String> additionalEvidence) {
@@ -1333,6 +1395,10 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
         return value instanceof Number number ? number.intValue() : Integer.parseInt(value.toString());
     }
 
+    private static String asString(Object value) {
+        return value instanceof String string ? string : "";
+    }
+
     private static double pct(BigDecimal value) {
         return value.doubleValue() / 100.0d;
     }
@@ -1343,6 +1409,15 @@ public final class EmaTrendStructurePullbackStrategy implements TradeIntentStrat
 
     private static double close(BarEvent bar) {
         return bar.ohlcv().close().doubleValue();
+    }
+
+    private static boolean trendStructureReady(TrendStructure trendStructure) {
+        return trendStructure == TrendStructure.CLEAN_UPTREND
+                || trendStructure == TrendStructure.CLEAN_DOWNTREND
+                || trendStructure == TrendStructure.EARLY_UPTREND
+                || trendStructure == TrendStructure.EARLY_DOWNTREND
+                || trendStructure == TrendStructure.PULLBACK_IN_UPTREND
+                || trendStructure == TrendStructure.PULLBACK_IN_DOWNTREND;
     }
 
     private enum SignalState {

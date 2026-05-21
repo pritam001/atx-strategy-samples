@@ -94,6 +94,7 @@ class TrendPullbackV3ResumableStateTest {
         assertThat(restoredNext.result()).usingRecursiveComparison().isEqualTo(freshNext.result());
         assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
         assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+        assertThat(restored.currentState().currentPhase()).isNotBlank().isIn(declaredPhaseIds());
     }
 
     private TradeIntentStrategy strategy(StrategyParameters parameters) {
@@ -109,6 +110,12 @@ class TrendPullbackV3ResumableStateTest {
                 TrendPullbackV3StrategyProvider.STRATEGY_VERSION,
                 parameters
         );
+    }
+
+    private List<String> declaredPhaseIds() {
+        return provider.descriptor().reasoningModel().phases().stream()
+                .map(org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor::phaseId)
+                .toList();
     }
 
     private static MarketDataVisibilitySnapshot visibility(BarEvent current, List<BarEvent> h4) {

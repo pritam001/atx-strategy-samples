@@ -7,6 +7,8 @@ import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentConditionEvidence;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIdentity;
@@ -16,7 +18,9 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDef
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 
@@ -59,7 +63,17 @@ public final class IndiaOrbBreakoutStrategyProvider implements StrategyProvider 
                     PerplexityStrategySupport.study("opening-range", "Opening Range", "range", Map.of("bars", DEFAULT_OPENING_RANGE_BARS), "Manual Indian cash/F&O session range; M15 runtime default uses 3 bars."),
                     PerplexityStrategySupport.study("atr", "ATR", "risk", Map.of("period", 14), "Closed-bar ATR stop distance."),
                     PerplexityStrategySupport.study("volume-sma", "Volume SMA", "confirmation", Map.of("period", 20), "Relative-volume breakout confirmation.")
-            )
+            ),
+            PerplexityStrategySupport.reasoningModel(STRATEGY_ID,
+                    "ORB breakout waits for the opening range, a close beyond the range, relative-volume confirmation, and ATR risk readiness.",
+                    List.of(
+                            PerplexityStrategySupport.descriptor("orb.range-ready", "Opening range is ready", ConditionRole.ENTRY_FILTER, true, "warmup", "Do not trade until the opening range is complete."),
+                            PerplexityStrategySupport.descriptor("orb.breakout", "Close broke opening range", ConditionRole.ENTRY_TRIGGER, true, "signal", "Require a close beyond the range boundary."),
+                            PerplexityStrategySupport.descriptor("orb.volume", "Relative volume confirms breakout", ConditionRole.ENTRY_FILTER, true, "signal", "Require breakout participation."),
+                            PerplexityStrategySupport.descriptor("orb.atr-ready", "ATR is available", ConditionRole.RISK_GUARD, true, "signal", "Require ATR for stop sizing."),
+                            PerplexityStrategySupport.descriptor("orb.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain invalidation and time exits."),
+                            PerplexityStrategySupport.descriptor("orb.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT, true, "cooldown", "Avoid immediate re-entry after lifecycle actions.")
+                    ))
     );
 
     @Override
@@ -113,7 +127,7 @@ record IndiaOrbBreakoutParameters(
     }
 }
 
-final class IndiaOrbBreakoutStrategy implements TradeIntentStrategy {
+final class IndiaOrbBreakoutStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final int INVALIDATION_WINDOW_BARS = 2;
 
     private final IndiaOrbBreakoutParameters params;
@@ -129,6 +143,30 @@ final class IndiaOrbBreakoutStrategy implements TradeIntentStrategy {
     @Override
     public String strategyId() {
         return IndiaOrbBreakoutStrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "india-orb-breakout-v1-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "cooldownRemaining", cooldownRemaining,
+                "activeDirection", activeDirection == null ? "" : activeDirection.name(),
+                "activeRangeHigh", activeRangeHigh,
+                "activeRangeLow", activeRangeLow
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+        String direction = String.valueOf(state == null ? "" : state.getOrDefault("activeDirection", ""));
+        activeDirection = direction.isBlank() ? null : Direction.valueOf(direction);
+        activeRangeHigh = asDouble(state == null ? null : state.get("activeRangeHigh"), Double.NaN);
+        activeRangeLow = asDouble(state == null ? null : state.get("activeRangeLow"), Double.NaN);
     }
 
     @Override
@@ -226,6 +264,58 @@ final class IndiaOrbBreakoutStrategy implements TradeIntentStrategy {
         return result;
     }
 
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return List.of(PerplexityStrategySupport.evidence("orb.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER,
+                    activeDirection != null || context.instrumentPosition().barsHeld() >= params.maxHoldingBars(), "Lifecycle exit is being evaluated", "No lifecycle exit yet"));
+        }
+        if (cooldownRemaining > 0) {
+            return List.of(PerplexityStrategySupport.evidence("orb.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT,
+                    false, "Cooldown is clear", "Cooldown is still active"));
+        }
+        BarEvent current = context.currentBar();
+        List<BarEvent> bars = context.instrumentHistory();
+        List<BarEvent> sessionBars = BarMath.sameIndiaSession(bars, current);
+        int openingRangeBars = openingRangeBarsFor(current);
+        if (sessionBars.size() <= openingRangeBars) {
+            return List.of(PerplexityStrategySupport.evidence("orb.range-ready", "Opening range is ready", ConditionRole.ENTRY_FILTER,
+                    false, "Opening range is ready", "Opening range is still forming"));
+        }
+        double rangeHigh = BarMath.highestHigh(sessionBars, 0, openingRangeBars);
+        double rangeLow = BarMath.lowestLow(sessionBars, 0, openingRangeBars);
+        double atr = BarMath.atr(bars, params.atrPeriod());
+        double averageVolume = BarMath.averageVolumeBeforeCurrent(bars, params.volumeLookbackBars());
+        double relativeVolume = BarMath.volume(current) / averageVolume;
+        double close = BarMath.close(current);
+        boolean rangeReady = Double.isFinite(rangeHigh) && Double.isFinite(rangeLow) && rangeHigh > rangeLow;
+        boolean breakout = rangeReady && (close > rangeHigh * (1.0d + params.breakoutBufferPct())
+                || params.allowShorts() && close < rangeLow * (1.0d - params.breakoutBufferPct()));
+        boolean atrReady = Double.isFinite(atr) && atr > 0.0d;
+        boolean volumeReady = Double.isFinite(relativeVolume) && relativeVolume >= params.minRelativeVolume();
+        return List.of(
+                PerplexityStrategySupport.evidence("orb.range-ready", "Opening range is ready", ConditionRole.ENTRY_FILTER, rangeReady, "Opening range is ready", "Opening range is invalid"),
+                PerplexityStrategySupport.evidence("orb.breakout", "Close broke opening range", ConditionRole.ENTRY_TRIGGER, breakout, "Close broke the opening range", "Close is still inside the opening range"),
+                PerplexityStrategySupport.evidence("orb.volume", "Relative volume confirms breakout", ConditionRole.ENTRY_FILTER, volumeReady, "Relative volume confirms breakout", "Relative volume is below threshold"),
+                PerplexityStrategySupport.evidence("orb.atr-ready", "ATR is available", ConditionRole.RISK_GUARD, atrReady, "ATR is available for stop sizing", "ATR is not ready")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        if (cooldownRemaining > 0) {
+            return "cooldown";
+        }
+        List<ThoughtConditionEvidence> evidence = evaluateReasoning(context);
+        if (evidence.stream().anyMatch(item -> item.conditionId().equals("orb.range-ready") && !item.passed())) {
+            return "warmup";
+        }
+        return evidence.stream().anyMatch(item -> item.conditionId().equals("orb.breakout") && item.passed()) ? "signal" : "scanning";
+    }
+
     private StrategyIntentResult invalidationExit(StrategyExecutionContext context) {
         if (activeDirection == null || context.instrumentPosition().barsHeld() > INVALIDATION_WINDOW_BARS) {
             return StrategyIntentResult.empty();
@@ -296,5 +386,13 @@ final class IndiaOrbBreakoutStrategy implements TradeIntentStrategy {
                 0.62d
                         + Math.min(0.18d, (relativeVolume - params.minRelativeVolume()) * 0.05d)
                         + Math.min(0.10d, Math.abs(close - rangeBoundary) / close));
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
+    }
+
+    private static double asDouble(Object value, double fallback) {
+        return value instanceof Number number ? number.doubleValue() : fallback;
     }
 }

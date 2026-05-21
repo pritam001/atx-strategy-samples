@@ -11,7 +11,11 @@ import org.algotradex.platform.contracts.common.value.TimeHorizon;
 import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 
 import java.math.BigDecimal;
@@ -36,7 +40,7 @@ import static java.util.Objects.requireNonNull;
  * class does not own order routing, position lifecycle, slippage, exchange rules, or portfolio
  * accounting.
  */
-public final class RangeSupportResistanceStrategy implements TradeSignalStrategy {
+public final class RangeSupportResistanceStrategy implements TradeSignalStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
 
     private final int lookback;
@@ -84,6 +88,11 @@ public final class RangeSupportResistanceStrategy implements TradeSignalStrategy
     }
 
     @Override
+    public String stateSchemaVersion() {
+        return "range-support-resistance-v1-state-v1";
+    }
+
+    @Override
     public Optional<TradeSignal> onBar(StrategyExecutionContext context) {
         requireNonNull(context, "context");
         List<BarEvent> history = context.instrumentHistory();
@@ -107,6 +116,51 @@ public final class RangeSupportResistanceStrategy implements TradeSignalStrategy
             return Optional.of(signal(current, Direction.SHORT, price, resistance, target));
         }
         return Optional.empty();
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        if (history.size() < lookback + 2) {
+            return List.of(new ThoughtConditionEvidence(
+                    "range-sr.warmup",
+                    "Range window is ready",
+                    ConditionRole.ENTRY_FILTER,
+                    false,
+                    "Waiting for enough closed bars to derive support and resistance"
+            ));
+        }
+        BarEvent current = context.currentBar();
+        BarEvent previous = history.get(history.size() - 2);
+        List<BarEvent> rangeWindow = history.subList(history.size() - 1 - lookback, history.size() - 1);
+        BigDecimal support = minLow(rangeWindow);
+        BigDecimal resistance = maxHigh(rangeWindow);
+        BigDecimal price = current.ohlcv().close();
+        boolean nearSupport = support.signum() > 0 && near(price, support);
+        boolean nearResistance = resistance.signum() > 0 && near(price, resistance);
+        boolean bullish = bullishConfirmation(current, previous);
+        boolean bearish = bearishConfirmation(current, previous);
+        return List.of(
+                new ThoughtConditionEvidence("range-sr.support-location", "Price is near support", ConditionRole.ENTRY_FILTER, nearSupport, nearSupport ? "Price is inside the support tolerance band" : "Price is not near support"),
+                new ThoughtConditionEvidence("range-sr.resistance-location", "Price is near resistance", ConditionRole.ENTRY_FILTER, nearResistance, nearResistance ? "Price is inside the resistance tolerance band" : "Price is not near resistance"),
+                new ThoughtConditionEvidence("range-sr.bullish-confirmation", "Bullish reversal candle confirmed", ConditionRole.ENTRY_TRIGGER, bullish, bullish ? "Bullish confirmation cleared the prior high" : "No bullish confirmation candle"),
+                new ThoughtConditionEvidence("range-sr.bearish-confirmation", "Bearish reversal candle confirmed", ConditionRole.ENTRY_TRIGGER, bearish, bearish ? "Bearish confirmation broke the prior low" : "No bearish confirmation candle")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        List<BarEvent> history = context.instrumentHistory();
+        if (history.size() < lookback + 2) {
+            return "warmup";
+        }
+        List<ThoughtConditionEvidence> evidence = evaluateReasoning(context);
+        boolean signal = evidence.stream().anyMatch(item -> item.conditionId().endsWith("support-location") && item.passed())
+                && evidence.stream().anyMatch(item -> item.conditionId().endsWith("bullish-confirmation") && item.passed())
+                || evidence.stream().anyMatch(item -> item.conditionId().endsWith("resistance-location") && item.passed())
+                && evidence.stream().anyMatch(item -> item.conditionId().endsWith("bearish-confirmation") && item.passed());
+        return signal ? "signal" : "range";
     }
 
     private boolean near(BigDecimal price, BigDecimal level) {

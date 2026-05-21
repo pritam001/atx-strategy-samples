@@ -464,6 +464,88 @@ public final class DoflamingoIchimokuMo002BetaStrategy implements TradeIntentStr
         );
     }
 
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        int index = history.size() - 1;
+        if (index < DoflamingoIndicatorMath.TREND_MINIMUM_INDEX) {
+            return "cloud";
+        }
+        Optional<DoflamingoIndicatorMath.IchimokuSnapshot> maybeIchimoku = DoflamingoIndicatorMath.ichimoku(history);
+        OptionalDouble maybeEma9 = DoflamingoIndicatorMath.closedBarEma(history, index, 9);
+        OptionalDouble maybeTrend = DoflamingoIndicatorMath.closedTrendScore(history, index);
+        OptionalDouble maybeAverage = DoflamingoIndicatorMath.closedTrendAverage(history, index, trendAverageLookback);
+        OptionalDouble maybeAtr = DoflamingoIndicatorMath.atr(history, index, atrPeriod);
+        if (maybeIchimoku.isEmpty() || maybeEma9.isEmpty() || maybeTrend.isEmpty() || maybeAverage.isEmpty()) {
+            return "cloud";
+        }
+        if (context.instrumentPosition().hasPosition() || cooldownRemaining > 0) {
+            return "risk";
+        }
+        if (!DoflamingoSessionGate.entryAllowed(context, sessionGating)
+                || DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes)) {
+            return "filters";
+        }
+
+        DoflamingoIndicatorMath.IchimokuSnapshot ichimoku = maybeIchimoku.get();
+        BarEvent current = context.currentBar();
+        double close = current.ohlcv().close().doubleValue();
+        double low = current.ohlcv().low().doubleValue();
+        double high = current.ohlcv().high().doubleValue();
+        double trend = maybeTrend.getAsDouble();
+        double trendAverage = maybeAverage.getAsDouble();
+        double previousHigh = previousHigh(history, index, 5);
+
+        boolean strictSetup = low > ichimoku.presentSpanB()
+                && maybeEma9.getAsDouble() > ichimoku.presentSpanA()
+                && ichimoku.presentSpanB() > ichimoku.presentSpanA()
+                && ichimoku.futureSpanA() > ichimoku.futureSpanB()
+                && ichimoku.conversionLine() > ichimoku.baseLine()
+                && trend > trendAverage
+                && trend > 0.0d;
+        boolean earlySetup = close > ichimoku.presentSpanB()
+                && ichimoku.futureSpanA() > ichimoku.futureSpanB()
+                && ichimoku.conversionLine() > ichimoku.baseLine()
+                && trend > trendAverage
+                && close > previousHigh;
+        boolean acceptedByMode = switch (entryMode) {
+            case STRICT_BETA -> strictSetup;
+            case EARLY_TRANSITION -> earlySetup;
+            case HYBRID -> strictSetup || earlySetup;
+        };
+        if (!acceptedByMode) {
+            return "cloud";
+        }
+
+        double atr = maybeAtr.orElse(Math.max(0.01d, high - low));
+        double cloudCeiling = Math.max(ichimoku.presentSpanA(), ichimoku.presentSpanB());
+        boolean cloudQuality = Math.abs(ichimoku.presentSpanA() - ichimoku.presentSpanB()) / atr >= minKumoThicknessAtr.doubleValue()
+                && Math.abs(ichimoku.futureSpanA() - ichimoku.futureSpanB()) / atr >= minFutureCloudSpreadAtr.doubleValue()
+                && (!requireFutureCloudWidening
+                || Math.abs(ichimoku.futureSpanA() - ichimoku.futureSpanB()) >= Math.abs(ichimoku.presentSpanA() - ichimoku.presentSpanB()))
+                && (!requireChikouClearSpace || DoflamingoIndicatorMath.chikouClearSpace(history, index, true))
+                && (tkCrossFreshBars == 0 || DoflamingoIndicatorMath.tkConfirmationFresh(history, index, tkCrossFreshBars, true));
+        if (!cloudQuality) {
+            return "cloud";
+        }
+
+        boolean momentum = !earlySetup
+                || (DoflamingoIndicatorMath.volumeAtLeastAverageMultiple(history, index, 20, volumeConfirmMultiple.doubleValue())
+                && DoflamingoIndicatorMath.atrExpansionAtLeast(history, index, atrPeriod, atrExpansionMultiple.doubleValue()));
+        if (!momentum) {
+            return "momentum";
+        }
+        if (!htfCloudBiasOk(context, true)) {
+            return "filters";
+        }
+        double entryAtrFromCloudTop = Math.max(0.0d, close - cloudCeiling) / atr;
+        if (maxEntryAtrFromCloudTop.signum() > 0 && entryAtrFromCloudTop > maxEntryAtrFromCloudTop.doubleValue()) {
+            return "risk";
+        }
+        return "risk";
+    }
+
     private StrategyIntentResult shortEntryIfNeeded(
             StrategyExecutionContext context,
             DoflamingoIndicatorMath.IchimokuSnapshot ichimoku,

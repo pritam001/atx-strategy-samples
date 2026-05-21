@@ -10,7 +10,11 @@ import org.algotradex.platform.contracts.common.value.TimeHorizon;
 import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 
 import java.math.BigDecimal;
@@ -18,6 +22,7 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
@@ -35,7 +40,7 @@ import static java.util.Objects.requireNonNull;
  * signal scoring only; order execution, broker routing, accepted-position lifecycle, and portfolio
  * accounting are platform-owned.
  */
-public final class Sma20PullbackContinuationStrategy implements TradeSignalStrategy {
+public final class Sma20PullbackContinuationStrategy implements TradeSignalStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final double CONFIDENCE_FLOOR = 0.45d;
     private static final double CONFIDENCE_CEILING = 0.85d;
 
@@ -61,6 +66,29 @@ public final class Sma20PullbackContinuationStrategy implements TradeSignalStrat
     @Override
     public String strategyId() {
         return Sma20PullbackContinuationStrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "sma-20-pullback-continuation-v1-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "state", state.name(),
+                "cooldownRemaining", cooldownRemaining,
+                "lastLongSetupTouchIndex", lastLongSetupTouchIndex,
+                "lastShortSetupTouchIndex", lastShortSetupTouchIndex
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        this.state = SignalState.valueOf(String.valueOf(state == null ? SignalState.NO_TREND.name() : state.getOrDefault("state", SignalState.NO_TREND.name())));
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+        lastLongSetupTouchIndex = asInt(state == null ? null : state.get("lastLongSetupTouchIndex"), -1);
+        lastShortSetupTouchIndex = asInt(state == null ? null : state.get("lastShortSetupTouchIndex"), -1);
     }
 
     @Override
@@ -124,6 +152,65 @@ public final class Sma20PullbackContinuationStrategy implements TradeSignalStrat
             }
         }
         return Optional.empty();
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        if (history.size() < params.slowSmaPeriod()) {
+            return List.of(new ThoughtConditionEvidence(
+                    "sma-pullback.warmup",
+                    "SMA pullback warmup complete",
+                    ConditionRole.ENTRY_FILTER,
+                    false,
+                    "Waiting for enough bars to compute both SMA guides"
+            ));
+        }
+        if (cooldownRemaining > 0) {
+            return List.of(new ThoughtConditionEvidence(
+                    "sma-pullback.cooldown",
+                    "Cooldown is clear",
+                    ConditionRole.RISK_GUARD,
+                    false,
+                    "Cooldown is still suppressing duplicate pullback signals"
+            ));
+        }
+        Optional<SmaSnapshot> snapshot = SmaSnapshot.from(history, params);
+        if (snapshot.isEmpty()) {
+            return List.of(new ThoughtConditionEvidence(
+                    "sma-pullback.warmup",
+                    "SMA pullback warmup complete",
+                    ConditionRole.ENTRY_FILTER,
+                    false,
+                    "Waiting for slope lookback and SMA values"
+            ));
+        }
+        TrendState trend = classifyTrend(snapshot.get());
+        Optional<SetupCandidate> longSetup = trend == TrendState.UP ? longSetup(history, snapshot.get()) : Optional.empty();
+        Optional<SetupCandidate> shortSetup = params.allowShorts() && trend == TrendState.DOWN ? shortSetup(history, snapshot.get()) : Optional.empty();
+        boolean trendReady = trend != TrendState.FLAT;
+        boolean pullbackReady = longSetup.isPresent() || shortSetup.isPresent();
+        boolean confidenceReady = longSetup.map(setup -> score(Direction.LONG, snapshot.get(), setup).compareTo(params.minConfidence()) >= 0)
+                .orElseGet(() -> shortSetup.map(setup -> score(Direction.SHORT, snapshot.get(), setup).compareTo(params.minConfidence()) >= 0).orElse(false));
+        return List.of(
+                new ThoughtConditionEvidence("sma-pullback.trend", "Fast SMA slope defines a trend", ConditionRole.ENTRY_FILTER, trendReady, trendReady ? "Fast SMA slope has directional bias" : "Fast SMA slope is flat"),
+                new ThoughtConditionEvidence("sma-pullback.pullback", "Pullback touch and trigger are present", ConditionRole.ENTRY_TRIGGER, pullbackReady, pullbackReady ? "A pullback touch and trigger are present" : "No qualifying pullback trigger yet"),
+                new ThoughtConditionEvidence("sma-pullback.confidence", "Setup confidence clears threshold", ConditionRole.RISK_GUARD, confidenceReady, confidenceReady ? "Computed setup confidence clears the threshold" : "Setup confidence does not clear the threshold")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        if (context.instrumentHistory().size() < params.slowSmaPeriod()) {
+            return "warmup";
+        }
+        if (cooldownRemaining > 0 || state == SignalState.COOLDOWN) {
+            return "cooldown";
+        }
+        return evaluateReasoning(context).stream().anyMatch(evidence -> evidence.conditionId().equals("sma-pullback.pullback") && evidence.passed())
+                ? "signal"
+                : "scanning";
     }
 
     private TrendState classifyTrend(SmaSnapshot snapshot) {
@@ -322,6 +409,10 @@ public final class Sma20PullbackContinuationStrategy implements TradeSignalStrat
 
     private static double close(BarEvent bar) {
         return bar.ohlcv().close().doubleValue();
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
     }
 
     private enum SignalState {

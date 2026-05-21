@@ -6,6 +6,8 @@ import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentConditionEvidence;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextFrameSnapshot;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
@@ -18,7 +20,9 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
 import org.algotradex.platform.core.api.enums.marketcontext.MarketStructure;
 import org.algotradex.platform.core.api.indicator.RollingIndicators;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 
@@ -65,7 +69,17 @@ public final class IndiaBollingerRsiRangeStrategyProvider implements StrategyPro
                     PerplexityStrategySupport.study("bollinger-bands", "Bollinger Bands", "range", Map.of("period", 20, "stdDev", "2.0"), "Closed-bar band touch and target context."),
                     PerplexityStrategySupport.study("rsi", "RSI", "mean-reversion", Map.of("period", 14), "Oversold/overbought filter."),
                     PerplexityStrategySupport.study("range-regime", "Range Regime", "filter", Map.of("lookbackBars", 40), "Directional drift gate.")
-            )
+            ),
+            PerplexityStrategySupport.reasoningModel(STRATEGY_ID,
+                    "Bollinger RSI range waits for range-regime quality, RSI extremes, band touch, and lifecycle risk checks.",
+                    List.of(
+                            PerplexityStrategySupport.descriptor("bb.warmup", "Bollinger RSI warmup complete", ConditionRole.ENTRY_FILTER, true, "warmup", "Seed Bollinger, RSI, and range windows."),
+                            PerplexityStrategySupport.descriptor("bb.rsi-oversold", "RSI is at reversal extreme", ConditionRole.ENTRY_FILTER, true, "scanning", "Require RSI at a reversion extreme."),
+                            PerplexityStrategySupport.descriptor("bb.lower-band-touch", "Price touched reversal band", ConditionRole.ENTRY_TRIGGER, true, "signal", "Require a band touch before fading the range."),
+                            PerplexityStrategySupport.descriptor("bb.range-regime", "Directional drift remains range-like", ConditionRole.REGIME_FILTER, true, "scanning", "Reject directional drift and non-range regimes."),
+                            PerplexityStrategySupport.descriptor("bb.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain invalidation and time exits."),
+                            PerplexityStrategySupport.descriptor("bb.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT, true, "cooldown", "Avoid immediate re-entry after lifecycle actions.")
+                    ))
     );
 
     @Override
@@ -127,7 +141,7 @@ record IndiaBollingerRsiRangeParameters(
     }
 }
 
-final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy {
+final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final int INVALIDATION_WINDOW_BARS = 2;
 
     private final IndiaBollingerRsiRangeParameters params;
@@ -135,6 +149,7 @@ final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy {
     private final RollingIndicators.SimpleRsi rsiIndicator;
     private int processedBars;
     private int cooldownRemaining;
+    private String lastProcessedEventId = "";
     private double currentMidline = Double.NaN;
     private double currentRsi = Double.NaN;
     private Direction activeDirection;
@@ -150,6 +165,59 @@ final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy {
     @Override
     public String strategyId() {
         return IndiaBollingerRsiRangeStrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "india-bollinger-rsi-range-v1-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "processedBars", processedBars,
+                "cooldownRemaining", cooldownRemaining,
+                "lastProcessedEventId", lastProcessedEventId,
+                "currentMidline", currentMidline,
+                "currentRsi", currentRsi,
+                "activeDirection", activeDirection == null ? "" : activeDirection.name(),
+                "activeLowerBand", activeLowerBand,
+                "activeUpperBand", activeUpperBand,
+                "midline", midlineIndicator.snapshotState(),
+                "rsi", rsiIndicator.snapshotState()
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        processedBars = asInt(state == null ? null : state.get("processedBars"), 0);
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+        lastProcessedEventId = asString(state == null ? null : state.get("lastProcessedEventId"));
+        currentMidline = asDouble(state == null ? null : state.get("currentMidline"), Double.NaN);
+        currentRsi = asDouble(state == null ? null : state.get("currentRsi"), Double.NaN);
+        String direction = String.valueOf(state == null ? "" : state.getOrDefault("activeDirection", ""));
+        activeDirection = direction.isBlank() ? null : Direction.valueOf(direction);
+        activeLowerBand = asDouble(state == null ? null : state.get("activeLowerBand"), Double.NaN);
+        activeUpperBand = asDouble(state == null ? null : state.get("activeUpperBand"), Double.NaN);
+        if (state != null && state.get("midline") != null) {
+            midlineIndicator.restoreState(ResumableStrategy.STATE_MAPPER.convertValue(state.get("midline"), RollingIndicators.SimpleMovingAverageState.class));
+            rsiIndicator.restoreState(ResumableStrategy.STATE_MAPPER.convertValue(state.get("rsi"), RollingIndicators.SimpleRsiState.class));
+        }
+    }
+
+    @Override
+    public void restoreStateForReWarm(Map<String, Object> checkpointState) {
+        processedBars = 0;
+        lastProcessedEventId = "";
+        currentMidline = Double.NaN;
+        currentRsi = Double.NaN;
+        midlineIndicator.restoreState(new RollingIndicators.SimpleMovingAverage(params.bollingerPeriod()).snapshotState());
+        rsiIndicator.restoreState(new RollingIndicators.SimpleRsi(params.rsiPeriod()).snapshotState());
+        cooldownRemaining = asInt(checkpointState == null ? null : checkpointState.get("cooldownRemaining"), 0);
+        String direction = String.valueOf(checkpointState == null ? "" : checkpointState.getOrDefault("activeDirection", ""));
+        activeDirection = direction.isBlank() ? null : Direction.valueOf(direction);
+        activeLowerBand = asDouble(checkpointState == null ? null : checkpointState.get("activeLowerBand"), Double.NaN);
+        activeUpperBand = asDouble(checkpointState == null ? null : checkpointState.get("activeUpperBand"), Double.NaN);
     }
 
     @Override
@@ -252,6 +320,61 @@ final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy {
         return result;
     }
 
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return List.of(PerplexityStrategySupport.evidence("bb.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER,
+                    activeDirection != null || context.instrumentPosition().barsHeld() >= params.maxHoldingBars(), "Lifecycle exit is being evaluated", "No lifecycle exit yet"));
+        }
+        if (cooldownRemaining > 0) {
+            return List.of(PerplexityStrategySupport.evidence("bb.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT,
+                    false, "Cooldown is clear", "Cooldown is still active"));
+        }
+        List<BarEvent> bars = context.instrumentHistory();
+        int readiness = Math.max(Math.max(params.bollingerPeriod(), params.rsiPeriod() + 1), params.trendLookbackBars());
+        if (bars.size() < readiness || !evaluateIndicatorsWithoutAdvancing(bars)) {
+            return List.of(PerplexityStrategySupport.evidence("bb.warmup", "Bollinger RSI warmup complete", ConditionRole.ENTRY_FILTER,
+                    false, "Indicators are ready", "Waiting for Bollinger, RSI, and range windows"));
+        }
+        BarEvent current = context.currentBar();
+        double midline = currentMidline;
+        double stddev = BarMath.stddevClose(bars, params.bollingerPeriod(), midline);
+        double upper = midline + (stddev * params.bollingerStdDev());
+        double lower = midline - (stddev * params.bollingerStdDev());
+        double close = BarMath.close(current);
+        double previousClose = BarMath.close(bars.get(bars.size() - 2));
+        double drift = Math.abs(close - BarMath.close(bars.get(bars.size() - params.trendLookbackBars()))) / Math.max(close, 0.0001d);
+        double bandWidthPct = (upper - lower) / Math.max(midline, 0.0001d);
+        boolean rangeRegime = isRangeRegime(context, drift, bandWidthPct);
+        boolean lowerTouch = BarMath.low(current) <= lower;
+        boolean upperTouch = BarMath.high(current) >= upper;
+        boolean rsiExtreme = currentRsi <= params.oversoldRsi() || currentRsi >= params.overboughtRsi();
+        boolean trigger = lowerTouch && close > previousClose || params.allowShorts() && upperTouch && close < previousClose;
+        return List.of(
+                PerplexityStrategySupport.evidence("bb.rsi-oversold", "RSI is at reversal extreme", ConditionRole.ENTRY_FILTER,
+                        rsiExtreme, "RSI is at a reversal extreme", "RSI is not at a reversal extreme"),
+                PerplexityStrategySupport.evidence("bb.lower-band-touch", "Price touched reversal band", ConditionRole.ENTRY_TRIGGER,
+                        trigger, "Price touched a reversal band and turned", "No band-touch reversal trigger yet"),
+                PerplexityStrategySupport.evidence("bb.range-regime", "Directional drift remains range-like", ConditionRole.REGIME_FILTER,
+                        rangeRegime, "Range regime is acceptable", "Range regime blocks the setup")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        if (cooldownRemaining > 0) {
+            return "cooldown";
+        }
+        List<ThoughtConditionEvidence> evidence = evaluateReasoning(context);
+        if (evidence.stream().anyMatch(item -> item.conditionId().equals("bb.warmup"))) {
+            return "warmup";
+        }
+        return evidence.stream().anyMatch(item -> item.conditionId().equals("bb.lower-band-touch") && item.passed()) ? "signal" : "scanning";
+    }
+
     private StrategyIntentResult invalidationExit(StrategyExecutionContext context) {
         if (activeDirection == null || context.instrumentPosition().barsHeld() > INVALIDATION_WINDOW_BARS) {
             return StrategyIntentResult.empty();
@@ -299,18 +422,48 @@ final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy {
     }
 
     private boolean advanceIndicators(List<BarEvent> bars) {
-        if (bars.size() <= processedBars) {
+        if (bars.isEmpty()) {
             return Double.isFinite(currentMidline) && Double.isFinite(currentRsi);
         }
-        for (int index = processedBars; index < bars.size(); index++) {
-            double close = BarMath.close(bars.get(index));
+        int startIndex = nextUnprocessedIndex(bars);
+        if (startIndex >= bars.size()) {
+            return Double.isFinite(currentMidline) && Double.isFinite(currentRsi);
+        }
+        for (int index = startIndex; index < bars.size(); index++) {
+            BarEvent bar = bars.get(index);
+            double close = BarMath.close(bar);
             OptionalDouble midline = midlineIndicator.update(close);
             OptionalDouble rsi = rsiIndicator.update(close);
             midline.ifPresent(value -> currentMidline = value);
             rsi.ifPresent(value -> currentRsi = value);
+            lastProcessedEventId = bar.eventId().value();
         }
-        processedBars = bars.size();
+        processedBars += bars.size() - startIndex;
         return Double.isFinite(currentMidline) && Double.isFinite(currentRsi);
+    }
+
+    private int nextUnprocessedIndex(List<BarEvent> bars) {
+        if (!lastProcessedEventId.isBlank()) {
+            for (int index = bars.size() - 1; index >= 0; index--) {
+                if (lastProcessedEventId.equals(bars.get(index).eventId().value())) {
+                    return index + 1;
+                }
+            }
+            if (processedBars > bars.size()) {
+                return bars.size() - 1;
+            }
+        }
+        if (processedBars <= 0) {
+            return 0;
+        }
+        return processedBars <= bars.size() ? processedBars : bars.size() - 1;
+    }
+
+    private boolean evaluateIndicatorsWithoutAdvancing(List<BarEvent> bars) {
+        Map<String, Object> checkpoint = snapshotState();
+        boolean ready = advanceIndicators(bars);
+        restoreState(checkpoint);
+        return ready;
     }
 
     private boolean isRangeRegime(StrategyExecutionContext context, double drift, double bandWidthPct) {
@@ -341,5 +494,17 @@ final class IndiaBollingerRsiRangeStrategy implements TradeIntentStrategy {
     private double rangeReversionConfidence(double rsi, double bandWidthPct) {
         // Combine oscillator extremity with a tradable, non-flat band width.
         return Math.min(0.88d, 0.60d + Math.min(0.16d, Math.abs(rsi - 50.0d) / 100.0d) + Math.min(0.12d, bandWidthPct));
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
+    }
+
+    private static double asDouble(Object value, double fallback) {
+        return value instanceof Number number ? number.doubleValue() : fallback;
+    }
+
+    private static String asString(Object value) {
+        return value instanceof String string ? string : "";
     }
 }

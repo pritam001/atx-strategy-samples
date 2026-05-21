@@ -7,16 +7,22 @@ import org.algotradex.platform.contracts.intelligence.TradeIntentExitPolicy;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
 import org.algotradex.platform.contracts.common.enums.PositionSide;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyInstrumentPosition;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
 import org.algotradex.platform.core.api.enums.marketcontext.PrimaryMarketRegime;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
@@ -35,10 +41,13 @@ import static java.util.Objects.requireNonNull;
  * not thread-safe. Broker routing, order acceptance, fills, exchange constraints, and portfolio
  * accounting remain outside the sample.
  */
-public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements TradeIntentStrategy {
+public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private static final double MIN_SHORT_PSAR_DISTANCE_PCT = 0.05d;
 
     private final BigDecimal minConfidence;
+    private final int macdFastPeriod;
+    private final int macdSlowPeriod;
+    private final int macdSignalPeriod;
     private final double stochOverbought;
     private final double stochOversold;
     private final TrendFilterMode trendFilterMode;
@@ -71,11 +80,12 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     private final boolean allowShortScaleIn;
     private final BigDecimal shortScaleInAtR;
     private final int maxShortScaleIns;
-    private final DoflamingoIndicatorMath.MultiIndicatorTracker indicatorTracker;
+    private DoflamingoIndicatorMath.MultiIndicatorTracker indicatorTracker;
     private int processedBars;
     private int cooldownRemaining;
     private int longStructureWeakBars;
     private int shortStructureWeakBars;
+    private String lastProcessedEventId = "";
 
     DoflamingoMultiIndicatorV6TrendReversalStrategy(BigDecimal minConfidence, int macdFastPeriod, int macdSlowPeriod,
                                                     int macdSignalPeriod, BigDecimal stochOverbought,
@@ -98,6 +108,9 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                                                     BigDecimal shortScaleInAtR,
                                                     int maxShortScaleIns) {
         this.minConfidence = requireNonNull(minConfidence, "minConfidence");
+        this.macdFastPeriod = macdFastPeriod;
+        this.macdSlowPeriod = macdSlowPeriod;
+        this.macdSignalPeriod = macdSignalPeriod;
         this.stochOverbought = requireNonNull(stochOverbought, "stochOverbought").doubleValue();
         this.stochOversold = requireNonNull(stochOversold, "stochOversold").doubleValue();
         this.trendFilterMode = TrendFilterMode.valueOf(requireNonNull(trendFilterMode, "trendFilterMode"));
@@ -136,6 +149,59 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     @Override
     public String strategyId() {
         return DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "doflamingo-multi-indicator-v6-trend-reversal-v4-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "processedBars", processedBars,
+                "lastProcessedEventId", lastProcessedEventId,
+                "cooldownRemaining", cooldownRemaining,
+                "longStructureWeakBars", longStructureWeakBars,
+                "shortStructureWeakBars", shortStructureWeakBars,
+                "indicatorTracker", indicatorTracker.snapshotState()
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        processedBars = asInt(state == null ? null : state.get("processedBars"), 0);
+        lastProcessedEventId = asString(state == null ? null : state.get("lastProcessedEventId"));
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+        longStructureWeakBars = asInt(state == null ? null : state.get("longStructureWeakBars"), 0);
+        shortStructureWeakBars = asInt(state == null ? null : state.get("shortStructureWeakBars"), 0);
+        Object trackerState = state == null ? null : state.get("indicatorTracker");
+        resetIndicatorTracker();
+        if (trackerState != null) {
+            indicatorTracker.restoreState(ResumableStrategy.STATE_MAPPER.convertValue(
+                    trackerState,
+                    DoflamingoIndicatorMath.MultiIndicatorTrackerState.class
+            ));
+        }
+    }
+
+    @Override
+    public void restoreStateForReWarm(Map<String, Object> checkpointState) {
+        processedBars = 0;
+        lastProcessedEventId = "";
+        cooldownRemaining = 0;
+        longStructureWeakBars = 0;
+        shortStructureWeakBars = 0;
+        resetIndicatorTracker();
+    }
+
+    @Override
+    public Map<String, Object> mergeRewarmedState(Map<String, Object> checkpointState, Map<String, Object> rewarmedState) {
+        Map<String, Object> merged = new LinkedHashMap<>(rewarmedState == null ? Map.of() : rewarmedState);
+        merged.put("cooldownRemaining", asInt(checkpointState == null ? null : checkpointState.get("cooldownRemaining"), 0));
+        merged.put("longStructureWeakBars", asInt(checkpointState == null ? null : checkpointState.get("longStructureWeakBars"), 0));
+        merged.put("shortStructureWeakBars", asInt(checkpointState == null ? null : checkpointState.get("shortStructureWeakBars"), 0));
+        return Map.copyOf(merged);
     }
 
     @Override
@@ -325,6 +391,155 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
         );
         cooldownRemaining = cooldownBars;
         return new StrategyIntentResult(List.of(signal), List.of(intent), List.of());
+    }
+
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        List<BarEvent> history = context.instrumentHistory();
+        Optional<DoflamingoIndicatorMath.MultiIndicatorState> maybeState = evaluateIndicatorsWithoutAdvancing(history);
+        if (maybeState.isEmpty()) {
+            return List.of(new ThoughtConditionEvidence(
+                    "momentum-reset",
+                    "Momentum reset",
+                    ConditionRole.ENTRY_TRIGGER,
+                    false,
+                    "Multi-indicator tracker is still warming."
+            ));
+        }
+        DoflamingoIndicatorMath.MultiIndicatorState state = maybeState.get();
+        StrategyInstrumentPosition position = context.instrumentPosition();
+        if (position.hasPosition()) {
+            return List.of(new ThoughtConditionEvidence(
+                    "lifecycle-exit",
+                    "Lifecycle exit",
+                    ConditionRole.EXIT_TRIGGER,
+                    false,
+                    "Existing " + position.side() + " position is active; lifecycle logic owns this bar."
+            ));
+        }
+
+        BarEvent current = context.currentBar();
+        int index = history.size() - 1;
+        OptionalDouble maybeEma50 = DoflamingoIndicatorMath.closedBarEma(history, index, 50);
+        OptionalDouble maybeTrend = DoflamingoIndicatorMath.closedTrendScore(history, index);
+        OptionalDouble maybeTrendAverage = DoflamingoIndicatorMath.closedTrendAverage(history, index, 10);
+        OptionalDouble maybeAtr = DoflamingoIndicatorMath.atr(history, index, atrPeriod);
+        double close = current.ohlcv().close().doubleValue();
+        double high = current.ohlcv().high().doubleValue();
+        double low = current.ohlcv().low().doubleValue();
+        boolean directionNowUp = state.psar() < low;
+        boolean directionNowDown = directionDown(state, current);
+        boolean directionPrevDown = state.previousPsar() > history.get(Math.max(0, history.size() - 2)).ohlcv().high().doubleValue();
+        boolean buySignalStoch = state.previousStochK() <= state.previousStochD()
+                && state.stochK() > state.stochD()
+                && Math.min(state.previousStochK(), state.stochK()) < stochOversold;
+        boolean sellSignalStoch = state.previousStochK() >= state.previousStochD()
+                && state.stochK() < state.stochD()
+                && Math.max(state.previousStochK(), state.stochK()) > stochOverbought;
+        boolean buySignalMacd = state.macdHistogram() > 0.0d
+                && state.previousMacdHistogram() > 0.0d
+                && state.secondPreviousMacdHistogram() < 0.0d
+                && state.macdSignal() < 0.0d;
+        boolean sellSignalMacd = state.macdHistogram() < 0.0d
+                && state.previousMacdHistogram() < 0.0d
+                && state.secondPreviousMacdHistogram() > 0.0d
+                && state.macdSignal() > 0.0d;
+        boolean macdHistogramRising = state.macdHistogram() > state.previousMacdHistogram();
+        boolean stochKRising = state.stochK() > state.previousStochK();
+        boolean stochDRising = state.stochD() > state.previousStochD();
+        boolean longMomentum = (buySignalMacd || buySignalStoch) && confirmations(macdHistogramRising, stochKRising, stochDRising) >= 2;
+        boolean shortMomentum = (sellSignalMacd || sellSignalStoch)
+                && confirmations(
+                state.macdHistogram() < state.previousMacdHistogram(),
+                state.stochK() < state.previousStochK(),
+                state.stochD() < state.previousStochD()
+        ) >= 2;
+        boolean longCloud = close > state.presentSpanB();
+        boolean shortCloud = shortCloudConfirmed(close, high, state);
+        boolean trendFilter = trendFilterPassed(close, state, maybeEma50, maybeTrend, maybeTrendAverage, buySignalMacd)
+                || shortTrendFilterPassed(close, state, maybeEma50, maybeTrend, maybeTrendAverage, sellSignalMacd);
+        boolean sessionAllowed = DoflamingoSessionGate.entryAllowed(context, sessionGating);
+        boolean portfolioAllowed = !portfolioDrawdownBlocked(context);
+        boolean regimeAllowed = !DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes);
+        boolean rsiWindowOk = requireRsiExtremeWithinBars == 0
+                || DoflamingoIndicatorMath.recentRsiExtreme(history, index, requireRsiExtremeWithinBars, stochOversold, true)
+                || DoflamingoIndicatorMath.recentRsiExtreme(history, index, requireRsiExtremeWithinBars, stochOverbought, false);
+        boolean volumeOk = DoflamingoIndicatorMath.volumeAtLeastAverageMultiple(history, index, 20, volumeConfirmMultiple.doubleValue());
+        BigDecimal longConfidence = confidence(directionNowUp, buySignalMacd, buySignalStoch, buySignalMacd || buySignalStoch,
+                longMomentum, false, close, state, maybeEma50, maybeTrend, maybeTrendAverage, maybeAtr, trendFilter);
+        BigDecimal shortConfidence = shortConfidence(directionNowDown, sellSignalMacd, sellSignalStoch, sellSignalMacd || sellSignalStoch,
+                shortMomentum, false, close, high, state, maybeEma50, maybeTrend, maybeTrendAverage, maybeAtr, trendFilter);
+        boolean riskOk = cooldownRemaining <= 0
+                && (longConfidence.compareTo(minConfidence) >= 0 || shortConfidence.compareTo(minConfidence) >= 0);
+
+        return List.of(
+                new ThoughtConditionEvidence("psar-direction", "PSAR direction", ConditionRole.ENTRY_TRIGGER,
+                        directionNowUp || directionNowDown,
+                        directionNowUp ? "PSAR is below the candle low." : directionNowDown ? "PSAR is above the candle high." : "PSAR has not flipped cleanly."),
+                new ThoughtConditionEvidence("momentum-reset", "Momentum reset", ConditionRole.ENTRY_TRIGGER,
+                        longMomentum || shortMomentum,
+                        "MACD/Stoch reversal momentum breadth=" + Math.max(
+                                confirmations(macdHistogramRising, stochKRising, stochDRising),
+                                confirmations(state.macdHistogram() < state.previousMacdHistogram(), state.stochK() < state.previousStochK(), state.stochD() < state.previousStochD())
+                        )),
+                new ThoughtConditionEvidence("cloud-reversal", "Cloud reversal", ConditionRole.ENTRY_FILTER,
+                        (directionNowUp && directionPrevDown && longCloud) || (directionNowDown && shortCloud),
+                        "Cloud long=" + longCloud + " short=" + shortCloud + "."),
+                new ThoughtConditionEvidence("trend-filter", "Adaptive trend filter", ConditionRole.REGIME_FILTER,
+                        trendFilter,
+                        trendFilter ? "Trend filter allows at least one reversal side." : "Trend filter blocks both reversal sides."),
+                new ThoughtConditionEvidence("entry-filters", "Entry filters", ConditionRole.ENTRY_FILTER,
+                        sessionAllowed && portfolioAllowed && regimeAllowed && rsiWindowOk && volumeOk,
+                        "sessionAllowed=" + sessionAllowed + " portfolioAllowed=" + portfolioAllowed
+                                + " regimeAllowed=" + regimeAllowed + " rsiWindowOk=" + rsiWindowOk + " volumeOk=" + volumeOk),
+                new ThoughtConditionEvidence("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD,
+                        riskOk,
+                        "cooldownRemaining=" + cooldownRemaining + " longConfidence=" + longConfidence
+                                + " shortConfidence=" + shortConfidence + " minConfidence=" + minConfidence)
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        Optional<DoflamingoIndicatorMath.MultiIndicatorState> maybeState = evaluateIndicatorsWithoutAdvancing(context.instrumentHistory());
+        if (maybeState.isEmpty()) {
+            return "reset";
+        }
+        if (cooldownRemaining > 0) {
+            return "risk";
+        }
+        if (!DoflamingoSessionGate.entryAllowed(context, sessionGating)
+                || portfolioDrawdownBlocked(context)
+                || DoflamingoMarketRegimeFilter.entryBlocked(context, skipMarketRegimes)) {
+            return "filters";
+        }
+        DoflamingoIndicatorMath.MultiIndicatorState state = maybeState.get();
+        BarEvent current = context.currentBar();
+        int index = context.instrumentHistory().size() - 1;
+        double close = current.ohlcv().close().doubleValue();
+        double high = current.ohlcv().high().doubleValue();
+        boolean directionNowUp = directionUp(state, current);
+        boolean directionNowDown = directionDown(state, current);
+        boolean buyMomentum = state.macdHistogram() > 0.0d || state.stochK() > state.stochD();
+        boolean sellMomentum = state.macdHistogram() < 0.0d || state.stochK() < state.stochD();
+        if (!buyMomentum && !sellMomentum) {
+            return "reset";
+        }
+        if ((!directionNowUp || close <= state.presentSpanB())
+                && (!directionNowDown || !shortCloudConfirmed(close, high, state))) {
+            return "reversal";
+        }
+        OptionalDouble maybeEma50 = DoflamingoIndicatorMath.closedBarEma(context.instrumentHistory(), index, 50);
+        OptionalDouble maybeTrend = DoflamingoIndicatorMath.closedTrendScore(context.instrumentHistory(), index);
+        OptionalDouble maybeTrendAverage = DoflamingoIndicatorMath.closedTrendAverage(context.instrumentHistory(), index, 10);
+        boolean trendOk = trendFilterPassed(close, state, maybeEma50, maybeTrend, maybeTrendAverage, buyMomentum)
+                || shortTrendFilterPassed(close, state, maybeEma50, maybeTrend, maybeTrendAverage, sellMomentum);
+        return trendOk ? "risk" : "filters";
     }
 
     private StrategyIntentResult positionIntent(
@@ -1000,15 +1215,63 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
     }
 
     private Optional<DoflamingoIndicatorMath.MultiIndicatorState> advanceIndicators(List<BarEvent> history) {
-        if (history.size() <= processedBars) {
+        if (history.isEmpty()) {
+            return Optional.empty();
+        }
+        int startIndex = nextUnprocessedIndex(history);
+        if (startIndex >= history.size()) {
             return Optional.empty();
         }
         Optional<DoflamingoIndicatorMath.MultiIndicatorState> state = Optional.empty();
-        for (int index = processedBars; index < history.size(); index++) {
-            state = indicatorTracker.update(history.get(index));
+        for (int index = startIndex; index < history.size(); index++) {
+            BarEvent bar = history.get(index);
+            state = indicatorTracker.update(bar);
+            lastProcessedEventId = bar.eventId().value();
         }
-        processedBars = history.size();
+        processedBars += history.size() - startIndex;
         return state;
+    }
+
+    private int nextUnprocessedIndex(List<BarEvent> history) {
+        if (!lastProcessedEventId.isBlank()) {
+            for (int index = history.size() - 1; index >= 0; index--) {
+                if (lastProcessedEventId.equals(history.get(index).eventId().value())) {
+                    return index + 1;
+                }
+            }
+            if (processedBars > history.size()) {
+                // Retained Simulation Lab windows may omit the checkpoint anchor. In that case,
+                // the only bar guaranteed to be post-checkpoint is the current tail bar.
+                return history.size() - 1;
+            }
+        }
+        if (processedBars <= 0) {
+            return 0;
+        }
+        return processedBars <= history.size() ? processedBars : history.size() - 1;
+    }
+
+    private Optional<DoflamingoIndicatorMath.MultiIndicatorState> evaluateIndicatorsWithoutAdvancing(List<BarEvent> history) {
+        int checkpointProcessedBars = processedBars;
+        String checkpointLastProcessedEventId = lastProcessedEventId;
+        DoflamingoIndicatorMath.MultiIndicatorTrackerState checkpointTracker = indicatorTracker.snapshotState();
+        Optional<DoflamingoIndicatorMath.MultiIndicatorState> state = advanceIndicators(history);
+        indicatorTracker.restoreState(checkpointTracker);
+        processedBars = checkpointProcessedBars;
+        lastProcessedEventId = checkpointLastProcessedEventId;
+        return state;
+    }
+
+    private void resetIndicatorTracker() {
+        indicatorTracker = DoflamingoIndicatorMath.multiIndicatorTracker(macdFastPeriod, macdSlowPeriod, macdSignalPeriod);
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
+    }
+
+    private static String asString(Object value) {
+        return value instanceof String string ? string : "";
     }
 
     private boolean portfolioDrawdownBlocked(StrategyExecutionContext context) {

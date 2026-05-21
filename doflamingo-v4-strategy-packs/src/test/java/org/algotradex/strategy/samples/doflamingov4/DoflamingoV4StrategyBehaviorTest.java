@@ -13,12 +13,14 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyStateEnvelope;
 import org.algotradex.platform.core.api.enums.replay.ReplayMode;
 import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 import org.algotradex.platform.core.strategy.simulation.SimulationStepper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -86,6 +88,89 @@ class DoflamingoV4StrategyBehaviorTest {
         assertThat(policy.target().type()).isEqualTo(StrategyExitRuleType.RR);
         assertThat(policy.target().value()).isEqualByComparingTo("2.5000");
         assertThat(policy.trailing().type().name()).isEqualTo("NONE");
+    }
+
+    @Test
+    void trendV4ImplementsSimulationLabSpiAndExplainsNoActionBars() {
+        var provider = new DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider();
+        TradeIntentStrategy strategy = (TradeIntentStrategy) provider.create(multiV4ResumeParameters(), null);
+
+        assertThat(strategy).isInstanceOf(ResumableStrategy.class);
+        assertThat(strategy).isInstanceOf(StrategyReasoningEvaluator.class);
+
+        StrategyReasoningEvaluator reasoning = (StrategyReasoningEvaluator) strategy;
+        var context = DoflamingoStrategyTestSupport.context(
+                DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars().subList(0, 10)
+        );
+
+        assertThat(reasoning.evaluateReasoning(context)).isNotEmpty();
+        assertThat(reasoning.currentPhase(context)).isNotBlank().isIn(trendV4PhaseIds());
+    }
+
+    @Test
+    void trendV4ResumableStateMatchesFreshReplayAcrossCheckpoint() {
+        var provider = new DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider();
+        StrategyParameters parameters = multiV4ResumeParameters();
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars();
+        int checkpointIndex = Math.max(1, primary.size() / 2);
+
+        TradeIntentStrategy original = (TradeIntentStrategy) provider.create(parameters, null);
+        replayRange(original, primary, 0, checkpointIndex);
+        ResumableStrategy originalState = (ResumableStrategy) original;
+        StrategyStateEnvelope checkpoint = originalState.initialState(
+                DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider.STRATEGY_VERSION,
+                "variant-a",
+                parameters
+        );
+
+        TradeIntentStrategy restored = (TradeIntentStrategy) provider.create(parameters, null);
+        ((ResumableStrategy) restored).resumeFromState(originalState.serialise(checkpoint));
+        StrategyIntentResult restoredFinal = replayRange(restored, primary, checkpointIndex, primary.size());
+
+        TradeIntentStrategy fresh = (TradeIntentStrategy) provider.create(parameters, null);
+        StrategyIntentResult freshFinal = replayRange(fresh, primary, 0, primary.size());
+
+        assertThat(restoredFinal).usingRecursiveComparison().isEqualTo(freshFinal);
+        assertThat(((ResumableStrategy) restored).snapshotState()).isEqualTo(((ResumableStrategy) fresh).snapshotState());
+    }
+
+    @Test
+    void trendV4SimulationStepperStateMatchesFreshReplayAcrossSerializedCheckpoint() {
+        var provider = new DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider();
+        StrategyParameters parameters = multiV4ResumeParameters();
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars();
+        int checkpointIndex = Math.max(1, primary.size() / 2);
+
+        SimulationStepper checkpointed = multiStepper(provider, parameters);
+        for (int index = 0; index < checkpointIndex; index++) {
+            checkpointed.step(primary.get(index), MarketDataVisibilitySnapshot.empty(), MarketContextSnapshot.empty());
+        }
+        StrategyStateEnvelope checkpoint = checkpointed.checkpoint("variant-a");
+
+        SimulationStepper restored = multiStepper(provider, parameters);
+        restored.resumeFromSerialised(checkpointed.serialise(checkpoint), parameters);
+        var restoredFinal = stepRange(restored, primary, List.of(), checkpointIndex, primary.size());
+
+        SimulationStepper fresh = multiStepper(provider, parameters);
+        var freshFinal = stepRange(fresh, primary, List.of(), 0, primary.size());
+
+        assertThat(restoredFinal.result()).usingRecursiveComparison().isEqualTo(freshFinal.result());
+        assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
+        assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+        assertThat(restored.currentState().currentPhase()).isNotBlank().isIn(trendV4PhaseIds());
+    }
+
+    @Test
+    void trendV4SimulationStepperEmissionsMatchDirectReplayGoldenActions() {
+        var provider = new DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider();
+        StrategyParameters parameters = multiV4ResumeParameters();
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars();
+
+        List<String> direct = replayDirectActions((TradeIntentStrategy) provider.create(parameters, null), primary);
+        List<String> stepped = replayStepperActions(multiStepper(provider, parameters), primary, List.of());
+
+        assertThat(direct).isEmpty();
+        assertThat(stepped).isEqualTo(direct);
     }
 
     @Test
@@ -179,6 +264,20 @@ class DoflamingoV4StrategyBehaviorTest {
     }
 
     @Test
+    void ichimokuV4SimulationStepperEmissionsMatchDirectReplayGoldenActions() {
+        var provider = new DoflamingoIchimokuMo002BetaV4StrategyProvider();
+        StrategyParameters parameters = ichimokuResumeParameters();
+        List<BarEvent> primary = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+        List<BarEvent> h1 = DoflamingoStrategyTestSupport.ichimokuBetaSetupBars();
+
+        List<String> direct = replayDirectActionsWithH1((TradeIntentStrategy) provider.create(parameters, null), primary, h1);
+        List<String> stepped = replayStepperActions(stepper(provider, parameters), primary, h1);
+
+        assertThat(direct).startsWith("ENTER_LONG");
+        assertThat(stepped).containsExactly("ENTER_LONG");
+    }
+
+    @Test
     void ichimokuV4ResumableStateMatchesFreshReplayAcrossCheckpoint() {
         var provider = new DoflamingoIchimokuMo002BetaV4StrategyProvider();
         StrategyParameters parameters = new StrategyParameters(Map.ofEntries(
@@ -241,6 +340,7 @@ class DoflamingoV4StrategyBehaviorTest {
         assertThat(restoredFinal.result()).usingRecursiveComparison().isEqualTo(freshFinal.result());
         assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
         assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+        assertThat(restored.currentState().currentPhase()).isNotBlank().isIn(ichimokuPhaseIds());
     }
 
     private static StrategyIntentResult firstIntent(TradeIntentStrategy strategy, List<BarEvent> bars) {
@@ -287,6 +387,52 @@ class DoflamingoV4StrategyBehaviorTest {
         return result;
     }
 
+    private static StrategyIntentResult replayRange(
+            TradeIntentStrategy strategy,
+            List<BarEvent> primary,
+            int start,
+            int endExclusive
+    ) {
+        StrategyIntentResult result = StrategyIntentResult.empty();
+        for (int index = start + 1; index <= endExclusive; index++) {
+            result = strategy.onBarIntent(DoflamingoStrategyTestSupport.context(primary.subList(0, index)));
+        }
+        return result;
+    }
+
+    private static List<String> replayDirectActions(TradeIntentStrategy strategy, List<BarEvent> primary) {
+        List<String> actions = new ArrayList<>();
+        for (int index = 1; index <= primary.size(); index++) {
+            strategy.onBarIntent(DoflamingoStrategyTestSupport.context(primary.subList(0, index))).tradeIntents().stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
+    }
+
+    private static List<String> replayDirectActionsWithH1(TradeIntentStrategy strategy, List<BarEvent> primary, List<BarEvent> h1) {
+        List<String> actions = new ArrayList<>();
+        for (int index = 1; index <= primary.size(); index++) {
+            strategy.onBarIntent(DoflamingoStrategyTestSupport.contextWithH1(
+                    primary.subList(0, index),
+                    h1.subList(0, Math.min(index, h1.size()))
+            )).tradeIntents().stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
+    }
+
+    private static StrategyParameters multiV4ResumeParameters() {
+        return new StrategyParameters(Map.of(
+                "macdFastPeriod", 3,
+                "macdSlowPeriod", 7,
+                "macdSignalPeriod", 8,
+                "minConfidence", "0.50",
+                "sessionGating", false
+        ));
+    }
+
     private static StrategyParameters ichimokuResumeParameters() {
         return new StrategyParameters(Map.ofEntries(
                 Map.entry("trendAverageLookback", 50),
@@ -314,6 +460,29 @@ class DoflamingoV4StrategyBehaviorTest {
         );
     }
 
+    private static SimulationStepper multiStepper(DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider provider, StrategyParameters parameters) {
+        return new SimulationStepper(
+                List.of((TradeSignalStrategy) provider.create(parameters, null)),
+                METADATA,
+                256,
+                java.time.Clock.systemUTC(),
+                DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider.STRATEGY_VERSION,
+                parameters
+        );
+    }
+
+    private static List<String> ichimokuPhaseIds() {
+        return new DoflamingoIchimokuMo002BetaV4StrategyProvider().descriptor().reasoningModel().phases().stream()
+                .map(org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor::phaseId)
+                .toList();
+    }
+
+    private static List<String> trendV4PhaseIds() {
+        return new DoflamingoMultiIndicatorV6TrendReversalV4StrategyProvider().descriptor().reasoningModel().phases().stream()
+                .map(org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor::phaseId)
+                .toList();
+    }
+
     private static org.algotradex.platform.core.strategy.simulation.SimulationStepResult stepRange(
             SimulationStepper stepper,
             List<BarEvent> primary,
@@ -326,6 +495,23 @@ class DoflamingoV4StrategyBehaviorTest {
             result = stepper.step(primary.get(index), visibility(primary.get(index), h1, index + 1), MarketContextSnapshot.empty());
         }
         return result;
+    }
+
+    private static List<String> replayStepperActions(
+            SimulationStepper stepper,
+            List<BarEvent> primary,
+            List<BarEvent> h1
+    ) {
+        List<String> actions = new ArrayList<>();
+        for (int index = 0; index < primary.size(); index++) {
+            stepper.step(primary.get(index), visibility(primary.get(index), h1, index + 1), MarketContextSnapshot.empty())
+                    .result()
+                    .emittedTradeIntents()
+                    .stream()
+                    .map(intent -> intent.action().name())
+                    .forEach(actions::add);
+        }
+        return actions;
     }
 
     private static MarketDataVisibilitySnapshot visibility(BarEvent current, List<BarEvent> h1, int visibleBars) {

@@ -1,5 +1,9 @@
 package org.algotradex.strategy.samples.range;
 
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.*;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
@@ -32,7 +36,7 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
     private static final String CONFIDENCE = "confidence";
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
-            new StrategyParameterDefinition(
+            withResumePolicy(new StrategyParameterDefinition(
                     LOOKBACK,
                     StrategyParameterType.INTEGER,
                     "Lookback",
@@ -42,8 +46,8 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
                     BigDecimal.valueOf(2),
                     BigDecimal.valueOf(500),
                     List.of()
-            ),
-            new StrategyParameterDefinition(
+            )),
+            withResumePolicy(new StrategyParameterDefinition(
                     TOLERANCE,
                     StrategyParameterType.DECIMAL,
                     "Tolerance",
@@ -53,8 +57,8 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
                     BigDecimal.valueOf(0.0001),
                     BigDecimal.valueOf(0.05),
                     List.of()
-            ),
-            new StrategyParameterDefinition(
+            )),
+            withResumePolicy(new StrategyParameterDefinition(
                     RISK_REWARD,
                     StrategyParameterType.DECIMAL,
                     "Risk Reward",
@@ -64,8 +68,8 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
                     BigDecimal.valueOf(0.1),
                     BigDecimal.valueOf(20.0),
                     List.of()
-            ),
-            new StrategyParameterDefinition(
+            )),
+            withResumePolicy(new StrategyParameterDefinition(
                     CONFIDENCE,
                     StrategyParameterType.DECIMAL,
                     "Confidence",
@@ -75,7 +79,7 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
                     BigDecimal.ZERO,
                     BigDecimal.ONE,
                     List.of()
-            )
+            ))
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -86,7 +90,8 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
             List.of("M15", "H1", "D1"),
             List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.SHORT_SIGNALS, StrategyCapability.PARAMETERIZED),
-            SCHEMA
+            SCHEMA,
+            reasoningModel()
     );
 
     @Override
@@ -111,6 +116,46 @@ public final class RangeSupportResistanceStrategyProvider implements StrategyPro
                 effective.decimal(TOLERANCE, BigDecimal.valueOf(0.002)),
                 effective.decimal(RISK_REWARD, BigDecimal.valueOf(2.0)),
                 effective.decimal(CONFIDENCE, BigDecimal.valueOf(0.70))
+        );
+    }
+
+    private static StrategyParameterDefinition withResumePolicy(StrategyParameterDefinition definition) {
+        StrategyParameterResumePolicy policy = switch (definition.key()) {
+            case LOOKBACK -> StrategyParameterResumePolicy.lookback(500);
+            case TOLERANCE, RISK_REWARD, CONFIDENCE -> StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.lookback(null);
+        };
+        return new StrategyParameterDefinition(
+                definition.key(),
+                definition.type(),
+                definition.label(),
+                definition.description(),
+                definition.required(),
+                definition.defaultValue(),
+                definition.min(),
+                definition.max(),
+                definition.allowedValues(),
+                policy
+        );
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                STRATEGY_VERSION + "-reasoning-v1",
+                "Range support/resistance waits for a bounded range, then looks for price near an edge and a confirmation candle away from it.",
+                "Range support/resistance phase={phase}; blocked={blocked_by}.",
+                List.of(
+                        new ReasoningPhaseDescriptor("warmup", "Warmup", "Collect enough closed bars for the range window."),
+                        new ReasoningPhaseDescriptor("range", "Range Scan", "Compare current price to support/resistance levels."),
+                        new ReasoningPhaseDescriptor("signal", "Signal", "A support or resistance confirmation fired.")
+                ),
+                List.of(
+                        new ReasoningConditionDescriptor("range-sr.warmup", "Range window is ready", ConditionRole.ENTRY_FILTER, true, "warmup", "Avoid emitting before the support/resistance window is available.", "Range window is ready", "Range window is still warming up"),
+                        new ReasoningConditionDescriptor("range-sr.support-location", "Price is near support", ConditionRole.ENTRY_FILTER, false, "range", "Explain whether the long location is present.", "Price is near support", "Price is not near support"),
+                        new ReasoningConditionDescriptor("range-sr.resistance-location", "Price is near resistance", ConditionRole.ENTRY_FILTER, false, "range", "Explain whether the short location is present.", "Price is near resistance", "Price is not near resistance"),
+                        new ReasoningConditionDescriptor("range-sr.bullish-confirmation", "Bullish reversal candle confirmed", ConditionRole.ENTRY_TRIGGER, false, "signal", "Explain long confirmation.", "Bullish confirmation passed", "Bullish confirmation missing"),
+                        new ReasoningConditionDescriptor("range-sr.bearish-confirmation", "Bearish reversal candle confirmed", ConditionRole.ENTRY_TRIGGER, false, "signal", "Explain short confirmation.", "Bearish confirmation passed", "Bearish confirmation missing")
+                )
         );
     }
 }

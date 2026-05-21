@@ -28,8 +28,14 @@ import org.algotradex.platform.contracts.intelligence.TradeIntentPreconditions;
 import org.algotradex.platform.contracts.intelligence.TradeIntentSizing;
 import org.algotradex.platform.contracts.intelligence.TradeSignal;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.indicator.StrategyChartStudy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterDefinition;
+import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterResumePolicy;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameterSchema;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyIntentResult;
@@ -77,15 +83,15 @@ final class PerplexityStrategySupport {
     }
 
     static StrategyParameterDefinition integerParam(String key, String label, String description, int defaultValue, int min, int max) {
-        return new StrategyParameterDefinition(key, StrategyParameterType.INTEGER, label, description, true, defaultValue, bd(min), bd(max), List.of());
+        return new StrategyParameterDefinition(key, StrategyParameterType.INTEGER, label, description, true, defaultValue, bd(min), bd(max), List.of(), resumePolicyFor(key));
     }
 
     static StrategyParameterDefinition decimalParam(String key, String label, String description, String defaultValue, String min, String max) {
-        return new StrategyParameterDefinition(key, StrategyParameterType.DECIMAL, label, description, true, new BigDecimal(defaultValue), new BigDecimal(min), new BigDecimal(max), List.of());
+        return new StrategyParameterDefinition(key, StrategyParameterType.DECIMAL, label, description, true, new BigDecimal(defaultValue), new BigDecimal(min), new BigDecimal(max), List.of(), resumePolicyFor(key));
     }
 
     static StrategyParameterDefinition boolParam(String key, String label, String description, boolean defaultValue) {
-        return new StrategyParameterDefinition(key, StrategyParameterType.BOOLEAN, label, description, true, defaultValue, null, null, List.of());
+        return new StrategyParameterDefinition(key, StrategyParameterType.BOOLEAN, label, description, true, defaultValue, null, null, List.of(), resumePolicyFor(key));
     }
 
     static StrategyParameterSchema schema(List<StrategyParameterDefinition> definitions) {
@@ -115,6 +121,31 @@ final class PerplexityStrategySupport {
 
     static StrategyChartStudy study(String indicatorId, String displayName, String role, Map<String, Object> parameters, String notes) {
         return new StrategyChartStudy(indicatorId, displayName, role, parameters, VERSION, true, notes);
+    }
+
+    static ReasoningModel reasoningModel(String strategyId, String thesis, List<ReasoningConditionDescriptor> conditions) {
+        return new ReasoningModel(
+                VERSION + "-" + strategyId + "-reasoning-v1",
+                thesis,
+                strategyId + " phase={phase}; blocked={blocked_by}.",
+                List.of(
+                        new ReasoningPhaseDescriptor("warmup", "Warmup", "Seed windows and indicator state."),
+                        new ReasoningPhaseDescriptor("scanning", "Scanning", "Watch for setup conditions."),
+                        new ReasoningPhaseDescriptor("signal", "Signal", "Entry conditions are present."),
+                        new ReasoningPhaseDescriptor("lifecycle", "Lifecycle", "Manage open-position exits and invalidations."),
+                        new ReasoningPhaseDescriptor("cooldown", "Cooldown", "Suppress duplicate entries after a lifecycle action.")
+                ),
+                conditions
+        );
+    }
+
+    static ReasoningConditionDescriptor descriptor(String id, String label, ConditionRole role, boolean required, String phase, String purpose) {
+        return new ReasoningConditionDescriptor(id, label, role, required, phase, purpose,
+                label + " passed", label + " blocked the setup");
+    }
+
+    static ThoughtConditionEvidence evidence(String id, String label, ConditionRole role, boolean passed, String passedMessage, String failedMessage) {
+        return new ThoughtConditionEvidence(id, label, role, passed, passed ? passedMessage : failedMessage);
     }
 
     static StrategyIntentResult entryResult(
@@ -266,6 +297,33 @@ final class PerplexityStrategySupport {
 
     static BigDecimal bd(int value) {
         return BigDecimal.valueOf(value);
+    }
+
+    private static StrategyParameterResumePolicy resumePolicyFor(String key) {
+        String normalized = key == null ? "" : key.toLowerCase(Locale.ROOT);
+        if (normalized.equals("cooldownbars")
+                || normalized.equals("maxholdingbars")
+                || normalized.equals("skiponexpiry")
+                || normalized.equals("enforcesessiongate")
+                || normalized.equals("allowshorts")
+                || normalized.equals("riskfraction")
+                || normalized.contains("threshold")
+                || normalized.contains("confidence")
+                || normalized.contains("multiple")
+                || normalized.contains("buffer")
+                || normalized.contains("bandpct")
+                || normalized.contains("stddev")
+                || normalized.contains("oversold")
+                || normalized.contains("overbought")) {
+            return StrategyParameterResumePolicy.forwardOnly();
+        }
+        if (normalized.contains("period")) {
+            return StrategyParameterResumePolicy.lookback(300);
+        }
+        if (normalized.contains("lookback") || normalized.contains("rangebars")) {
+            return StrategyParameterResumePolicy.lookback(300);
+        }
+        return StrategyParameterResumePolicy.forwardOnly();
     }
 
     static boolean isWithinIndiaWindow(BarEvent bar, LocalTime startInclusive, LocalTime endExclusive) {

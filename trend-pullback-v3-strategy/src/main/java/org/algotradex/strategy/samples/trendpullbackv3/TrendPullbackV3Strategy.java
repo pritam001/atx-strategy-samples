@@ -253,6 +253,33 @@ public final class TrendPullbackV3Strategy implements TradeIntentStrategy, Resum
         );
     }
 
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        requireNonNull(context, "context");
+        BarEvent current = context.currentBar();
+        if (context.instrumentPosition().hasPosition()) {
+            return "risk";
+        }
+        Instant cooldownUntil = cooldownUntilByInstrument.get(current.instrument().instrumentId());
+        if (cooldownUntil != null && current.occurredAt().isBefore(cooldownUntil)) {
+            return "risk";
+        }
+        String executionTimeframe = executionTimeframe(current);
+        List<BarEvent> executionBars = last(context.history(executionTimeframe), params.ltfLookback());
+        List<BarEvent> bars4h = last(context.history("H4"), params.htfLookback());
+        if (bars4h.size() < 50) {
+            return "regime";
+        }
+        if (executionBars.size() < 20) {
+            return "trigger";
+        }
+        Evaluation evaluation = evaluate(current, bars4h, executionBars, executionTimeframe);
+        if (evaluation.setup().isPresent()) {
+            return "risk";
+        }
+        return phaseForCondition(conditionIdForRejection(evaluation.rejectionCode()));
+    }
+
     private StrategyIntentResult diagnosticsOnly(String code, String detail) {
         if (!params.emitDiagnostics()) {
             return StrategyIntentResult.empty();
@@ -704,6 +731,15 @@ public final class TrendPullbackV3Strategy implements TradeIntentStrategy, Resum
             case "cooldown" -> ConditionRole.POSITION_CONTEXT;
             case "pullback-pattern" -> ConditionRole.ENTRY_TRIGGER;
             default -> ConditionRole.ENTRY_FILTER;
+        };
+    }
+
+    private static String phaseForCondition(String conditionId) {
+        return switch (conditionId) {
+            case "h4-trend" -> "regime";
+            case "pivot-source", "confluence" -> "structure";
+            case "rr", "cooldown" -> "risk";
+            default -> "trigger";
         };
     }
 

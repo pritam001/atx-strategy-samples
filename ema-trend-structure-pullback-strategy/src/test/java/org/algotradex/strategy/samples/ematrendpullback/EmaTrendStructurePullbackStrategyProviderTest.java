@@ -29,6 +29,7 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyStateEnvelop
 import org.algotradex.platform.core.api.enums.replay.ReplayMode;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
@@ -272,6 +273,41 @@ class EmaTrendStructurePullbackStrategyProviderTest {
         assertThat(restoredFinal.result()).usingRecursiveComparison().isEqualTo(freshFinal.result());
         assertThat(restored.currentState().strategyState()).isEqualTo(fresh.currentState().strategyState());
         assertThat(restored.currentState().resolvedParamsHash()).isEqualTo(fresh.currentState().resolvedParamsHash());
+        assertThat(restored.currentState().currentPhase()).isNotBlank().isIn(declaredPhaseIds());
+    }
+
+    @Test
+    void reasoningObserverDoesNotMutatePullbackRuntimeBeforeDecision() {
+        List<BarEvent> bars = bullishPullbackBars();
+        TradeIntentStrategy strategy = compactStrategy(Map.of());
+        for (int endExclusive = 1; endExclusive < bars.size(); endExclusive++) {
+            strategy.onBarIntent(context(bars.subList(0, endExclusive)));
+        }
+        ResumableStrategy resumable = (ResumableStrategy) strategy;
+        StrategyReasoningEvaluator reasoning = (StrategyReasoningEvaluator) strategy;
+        Map<String, Object> stateBeforeReasoning = resumable.snapshotState();
+
+        reasoning.evaluateReasoning(context(bars));
+        reasoning.currentPhase(context(bars));
+
+        assertThat(resumable.snapshotState()).isEqualTo(stateBeforeReasoning);
+        StrategyIntentResult result = strategy.onBarIntent(context(bars));
+        assertThat(result.tradeSignals()).hasSize(1);
+        assertThat(result.tradeIntents()).hasSize(1);
+        assertThat(result.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.ENTER_LONG);
+        assertThat(result.tradeIntents().getFirst().sourceBarId()).isEqualTo("bar-016");
+    }
+
+    @Test
+    void simulationStepperEmissionsMatchDirectReplayGoldenSequence() {
+        List<BarEvent> bars = bullishPullbackBars();
+        StrategyParameters parameters = new StrategyParameters(compactParameters(Map.of()));
+
+        List<String> direct = replayDirectIntentKeys(compactStrategy(Map.of()), bars);
+        List<String> stepped = replayStepperIntentKeys(stepper(parameters), bars);
+
+        assertThat(direct).containsExactly("ENTER_LONG:bar-016");
+        assertThat(stepped).isEqualTo(direct);
     }
 
     @Test
@@ -574,6 +610,12 @@ class EmaTrendStructurePullbackStrategyProviderTest {
         );
     }
 
+    private List<String> declaredPhaseIds() {
+        return provider.descriptor().reasoningModel().phases().stream()
+                .map(org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor::phaseId)
+                .toList();
+    }
+
     private static org.algotradex.platform.core.strategy.simulation.SimulationStepResult stepRange(
             SimulationStepper stepper,
             List<BarEvent> bars,
@@ -668,6 +710,29 @@ class EmaTrendStructurePullbackStrategyProviderTest {
             signal.ifPresent(signals::add);
         }
         return signals;
+    }
+
+    private static List<String> replayDirectIntentKeys(TradeIntentStrategy strategy, List<BarEvent> bars) {
+        List<String> intents = new ArrayList<>();
+        for (int index = 1; index <= bars.size(); index++) {
+            strategy.onBarIntent(context(bars.subList(0, index))).tradeIntents().stream()
+                    .map(intent -> intent.action().name() + ':' + intent.sourceBarId())
+                    .forEach(intents::add);
+        }
+        return intents;
+    }
+
+    private static List<String> replayStepperIntentKeys(SimulationStepper stepper, List<BarEvent> bars) {
+        List<String> intents = new ArrayList<>();
+        for (BarEvent bar : bars) {
+            stepper.step(bar, MarketDataVisibilitySnapshot.empty(), MarketContextSnapshot.empty())
+                    .result()
+                    .emittedTradeIntents()
+                    .stream()
+                    .map(intent -> intent.action().name() + ':' + intent.sourceBarId())
+                    .forEach(intents::add);
+        }
+        return intents;
     }
 
     private static StrategyExecutionContext context(List<BarEvent> history) {

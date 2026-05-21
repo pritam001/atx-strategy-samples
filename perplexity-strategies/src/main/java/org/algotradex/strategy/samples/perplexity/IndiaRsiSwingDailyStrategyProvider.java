@@ -6,6 +6,8 @@ import org.algotradex.platform.contracts.intelligence.SetupType;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentConditionEvidence;
 import org.algotradex.platform.contracts.intelligence.StrategyTradeIntentReason;
 import org.algotradex.platform.contracts.market.BarEvent;
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ThoughtConditionEvidence;
 import org.algotradex.platform.core.api.dto.common.marketcontext.MarketContextFrameSnapshot;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyExecutionContext;
@@ -18,7 +20,9 @@ import org.algotradex.platform.core.api.dto.common.strategy.StrategyParameters;
 import org.algotradex.platform.core.api.dto.common.strategy.StrategyValidationResult;
 import org.algotradex.platform.core.api.enums.marketcontext.TrendDirection;
 import org.algotradex.platform.core.api.indicator.RollingIndicators;
+import org.algotradex.platform.core.api.service.strategy.ResumableStrategy;
 import org.algotradex.platform.core.api.service.strategy.StrategyProvider;
+import org.algotradex.platform.core.api.service.strategy.StrategyReasoningEvaluator;
 import org.algotradex.platform.core.api.service.strategy.TradeIntentStrategy;
 import org.algotradex.platform.core.api.service.strategy.TradeSignalStrategy;
 
@@ -63,7 +67,18 @@ public final class IndiaRsiSwingDailyStrategyProvider implements StrategyProvide
                     PerplexityStrategySupport.study("ema", "Slow EMA", "trend", Map.of("period", 30), "Primary swing trend filter."),
                     PerplexityStrategySupport.study("rsi", "RSI", "pullback", Map.of("period", 14), "Pullback-zone oscillator."),
                     PerplexityStrategySupport.study("volume-sma", "Volume SMA", "confirmation", Map.of("period", 20), "Participation confirmation.")
-            )
+            ),
+            PerplexityStrategySupport.reasoningModel(STRATEGY_ID,
+                    "RSI swing waits for EMA trend alignment, RSI pullback into zone, resumption candle, and relative-volume confirmation.",
+                    List.of(
+                            PerplexityStrategySupport.descriptor("rsi-swing.warmup", "RSI swing warmup complete", ConditionRole.ENTRY_FILTER, true, "warmup", "Seed EMA, RSI, and volume windows."),
+                            PerplexityStrategySupport.descriptor("rsi-swing.trend", "EMA trend is aligned", ConditionRole.REGIME_FILTER, true, "scanning", "Avoid counter-trend swing pullbacks."),
+                            PerplexityStrategySupport.descriptor("rsi-swing.pullback-zone", "RSI is in pullback zone", ConditionRole.ENTRY_FILTER, true, "scanning", "Require pullback RSI to be in the configured band."),
+                            PerplexityStrategySupport.descriptor("rsi-swing.resumption", "Current bar resumes trend direction", ConditionRole.ENTRY_TRIGGER, true, "signal", "Require price to resume with the trend."),
+                            PerplexityStrategySupport.descriptor("rsi-swing.volume", "Relative volume confirms participation", ConditionRole.ENTRY_FILTER, true, "signal", "Require enough participation for the swing entry."),
+                            PerplexityStrategySupport.descriptor("rsi-swing.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER, false, "lifecycle", "Explain time exits while a position is open."),
+                            PerplexityStrategySupport.descriptor("rsi-swing.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT, true, "cooldown", "Avoid immediate re-entry after lifecycle actions.")
+                    ))
     );
 
     @Override
@@ -119,13 +134,14 @@ record IndiaRsiSwingDailyParameters(
     }
 }
 
-final class IndiaRsiSwingDailyStrategy implements TradeIntentStrategy {
+final class IndiaRsiSwingDailyStrategy implements TradeIntentStrategy, ResumableStrategy, StrategyReasoningEvaluator {
     private final IndiaRsiSwingDailyParameters params;
     private final RollingIndicators.Ema fastEmaIndicator;
     private final RollingIndicators.Ema slowEmaIndicator;
     private final RollingIndicators.SimpleRsi rsiIndicator;
     private int processedBars;
     private int cooldownRemaining;
+    private String lastProcessedEventId = "";
     private double currentFastEma = Double.NaN;
     private double currentSlowEma = Double.NaN;
     private double currentRsi = Double.NaN;
@@ -140,6 +156,54 @@ final class IndiaRsiSwingDailyStrategy implements TradeIntentStrategy {
     @Override
     public String strategyId() {
         return IndiaRsiSwingDailyStrategyProvider.STRATEGY_ID;
+    }
+
+    @Override
+    public String stateSchemaVersion() {
+        return "india-rsi-swing-daily-v1-state-v1";
+    }
+
+    @Override
+    public Map<String, Object> snapshotState() {
+        return Map.of(
+                "processedBars", processedBars,
+                "cooldownRemaining", cooldownRemaining,
+                "lastProcessedEventId", lastProcessedEventId,
+                "currentFastEma", currentFastEma,
+                "currentSlowEma", currentSlowEma,
+                "currentRsi", currentRsi,
+                "fastEma", fastEmaIndicator.snapshotState(),
+                "slowEma", slowEmaIndicator.snapshotState(),
+                "rsi", rsiIndicator.snapshotState()
+        );
+    }
+
+    @Override
+    public void restoreState(Map<String, Object> state) {
+        processedBars = asInt(state == null ? null : state.get("processedBars"), 0);
+        cooldownRemaining = asInt(state == null ? null : state.get("cooldownRemaining"), 0);
+        lastProcessedEventId = asString(state == null ? null : state.get("lastProcessedEventId"));
+        currentFastEma = asDouble(state == null ? null : state.get("currentFastEma"), Double.NaN);
+        currentSlowEma = asDouble(state == null ? null : state.get("currentSlowEma"), Double.NaN);
+        currentRsi = asDouble(state == null ? null : state.get("currentRsi"), Double.NaN);
+        if (state != null && state.get("fastEma") != null) {
+            fastEmaIndicator.restoreState(ResumableStrategy.STATE_MAPPER.convertValue(state.get("fastEma"), RollingIndicators.EmaState.class));
+            slowEmaIndicator.restoreState(ResumableStrategy.STATE_MAPPER.convertValue(state.get("slowEma"), RollingIndicators.EmaState.class));
+            rsiIndicator.restoreState(ResumableStrategy.STATE_MAPPER.convertValue(state.get("rsi"), RollingIndicators.SimpleRsiState.class));
+        }
+    }
+
+    @Override
+    public void restoreStateForReWarm(Map<String, Object> checkpointState) {
+        processedBars = 0;
+        lastProcessedEventId = "";
+        currentFastEma = Double.NaN;
+        currentSlowEma = Double.NaN;
+        currentRsi = Double.NaN;
+        fastEmaIndicator.restoreState(new RollingIndicators.Ema(params.fastEmaPeriod()).snapshotState());
+        slowEmaIndicator.restoreState(new RollingIndicators.Ema(params.slowEmaPeriod()).snapshotState());
+        rsiIndicator.restoreState(new RollingIndicators.SimpleRsi(params.rsiPeriod()).snapshotState());
+        cooldownRemaining = asInt(checkpointState == null ? null : checkpointState.get("cooldownRemaining"), 0);
     }
 
     @Override
@@ -234,21 +298,110 @@ final class IndiaRsiSwingDailyStrategy implements TradeIntentStrategy {
         return result;
     }
 
+    @Override
+    public List<ThoughtConditionEvidence> evaluateReasoning(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return List.of(PerplexityStrategySupport.evidence("rsi-swing.lifecycle", "Lifecycle exit", ConditionRole.EXIT_TRIGGER,
+                    context.instrumentPosition().barsHeld() >= params.maxHoldingBars(), "Time exit is ready", "Holding period has not reached the time exit"));
+        }
+        if (cooldownRemaining > 0) {
+            return List.of(PerplexityStrategySupport.evidence("rsi-swing.cooldown", "Cooldown is clear", ConditionRole.POSITION_CONTEXT,
+                    false, "Cooldown is clear", "Cooldown is still active"));
+        }
+        List<BarEvent> bars = context.instrumentHistory();
+        int readiness = Math.max(Math.max(params.slowEmaPeriod(), params.rsiPeriod() + 1), params.volumeLookbackBars() + 1);
+        if (bars.size() < readiness || !evaluateIndicatorsWithoutAdvancing(bars)) {
+            return List.of(PerplexityStrategySupport.evidence("rsi-swing.warmup", "RSI swing warmup complete", ConditionRole.ENTRY_FILTER,
+                    false, "Indicators are ready", "Waiting for EMA, RSI, and volume windows"));
+        }
+        BarEvent current = context.currentBar();
+        double close = BarMath.close(current);
+        double previousClose = BarMath.close(bars.get(bars.size() - 2));
+        double averageVolume = BarMath.averageVolumeBeforeCurrent(bars, params.volumeLookbackBars());
+        double relativeVolume = BarMath.volume(current) / averageVolume;
+        Optional<TrendDirection> marketTrend = marketTrendDirection(context);
+        boolean emaBullishTrend = close > currentSlowEma && currentFastEma > currentSlowEma;
+        boolean emaBearishTrend = close < currentSlowEma && currentFastEma < currentSlowEma;
+        boolean bullishTrend = marketTrend.map(direction -> direction == TrendDirection.UP).orElse(emaBullishTrend);
+        boolean bearishTrend = marketTrend.map(direction -> direction == TrendDirection.DOWN).orElse(emaBearishTrend);
+        boolean rsiPullback = currentRsi >= params.pullbackRsiMin() && currentRsi <= params.pullbackRsiMax();
+        boolean bullishResumption = close > previousClose && close >= BarMath.open(current) && close >= currentFastEma;
+        boolean bearishResumption = close < previousClose && close <= BarMath.open(current) && close <= currentFastEma;
+        boolean volumeReady = Double.isFinite(relativeVolume) && relativeVolume >= params.minRelativeVolume();
+        return List.of(
+                PerplexityStrategySupport.evidence("rsi-swing.trend", "EMA trend is aligned", ConditionRole.REGIME_FILTER,
+                        bullishTrend || bearishTrend, "Trend is aligned", "Trend is not aligned"),
+                PerplexityStrategySupport.evidence("rsi-swing.pullback-zone", "RSI is in pullback zone", ConditionRole.ENTRY_FILTER,
+                        rsiPullback, "RSI is inside the pullback zone", "RSI is outside the pullback zone"),
+                PerplexityStrategySupport.evidence("rsi-swing.resumption", "Current bar resumes trend direction", ConditionRole.ENTRY_TRIGGER,
+                        bullishResumption || params.allowShorts() && bearishResumption, "Current bar resumes trend direction", "Current bar has not resumed"),
+                PerplexityStrategySupport.evidence("rsi-swing.volume", "Relative volume confirms participation", ConditionRole.ENTRY_FILTER,
+                        volumeReady, "Relative volume confirms participation", "Relative volume is below the threshold")
+        );
+    }
+
+    @Override
+    public String currentPhase(StrategyExecutionContext context) {
+        if (context.instrumentPosition().hasPosition()) {
+            return "lifecycle";
+        }
+        if (cooldownRemaining > 0) {
+            return "cooldown";
+        }
+        List<ThoughtConditionEvidence> evidence = evaluateReasoning(context);
+        if (evidence.stream().anyMatch(item -> item.conditionId().endsWith("warmup"))) {
+            return "warmup";
+        }
+        return evidence.stream().filter(item -> !item.conditionId().endsWith("volume")).allMatch(ThoughtConditionEvidence::passed)
+                ? "signal"
+                : "scanning";
+    }
+
     private boolean advanceIndicators(List<BarEvent> bars) {
-        if (bars.size() <= processedBars) {
+        if (bars.isEmpty()) {
             return Double.isFinite(currentFastEma) && Double.isFinite(currentSlowEma) && Double.isFinite(currentRsi);
         }
-        for (int index = processedBars; index < bars.size(); index++) {
-            double close = BarMath.close(bars.get(index));
+        int startIndex = nextUnprocessedIndex(bars);
+        if (startIndex >= bars.size()) {
+            return Double.isFinite(currentFastEma) && Double.isFinite(currentSlowEma) && Double.isFinite(currentRsi);
+        }
+        for (int index = startIndex; index < bars.size(); index++) {
+            BarEvent bar = bars.get(index);
+            double close = BarMath.close(bar);
             OptionalDouble fast = fastEmaIndicator.update(close);
             OptionalDouble slow = slowEmaIndicator.update(close);
             OptionalDouble rsi = rsiIndicator.update(close);
             fast.ifPresent(value -> currentFastEma = value);
             slow.ifPresent(value -> currentSlowEma = value);
             rsi.ifPresent(value -> currentRsi = value);
+            lastProcessedEventId = bar.eventId().value();
         }
-        processedBars = bars.size();
+        processedBars += bars.size() - startIndex;
         return Double.isFinite(currentFastEma) && Double.isFinite(currentSlowEma) && Double.isFinite(currentRsi);
+    }
+
+    private int nextUnprocessedIndex(List<BarEvent> bars) {
+        if (!lastProcessedEventId.isBlank()) {
+            for (int index = bars.size() - 1; index >= 0; index--) {
+                if (lastProcessedEventId.equals(bars.get(index).eventId().value())) {
+                    return index + 1;
+                }
+            }
+            if (processedBars > bars.size()) {
+                return bars.size() - 1;
+            }
+        }
+        if (processedBars <= 0) {
+            return 0;
+        }
+        return processedBars <= bars.size() ? processedBars : bars.size() - 1;
+    }
+
+    private boolean evaluateIndicatorsWithoutAdvancing(List<BarEvent> bars) {
+        Map<String, Object> checkpoint = snapshotState();
+        boolean ready = advanceIndicators(bars);
+        restoreState(checkpoint);
+        return ready;
     }
 
     private Optional<TrendDirection> marketTrendDirection(StrategyExecutionContext context) {
@@ -275,5 +428,17 @@ final class IndiaRsiSwingDailyStrategy implements TradeIntentStrategy {
                 0.62d
                         + Math.min(0.14d, Math.abs(fastEma - slowEma) / Math.max(close, 0.0001d))
                         + Math.min(0.12d, (relativeVolume - params.minRelativeVolume()) * 0.04d));
+    }
+
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
+    }
+
+    private static double asDouble(Object value, double fallback) {
+        return value instanceof Number number ? number.doubleValue() : fallback;
+    }
+
+    private static String asString(Object value) {
+        return value instanceof String string ? string : "";
     }
 }

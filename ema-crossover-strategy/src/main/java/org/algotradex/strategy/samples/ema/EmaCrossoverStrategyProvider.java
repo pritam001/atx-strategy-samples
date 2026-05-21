@@ -1,5 +1,9 @@
 package org.algotradex.strategy.samples.ema;
 
+import org.algotradex.platform.contracts.simulation.ConditionRole;
+import org.algotradex.platform.contracts.simulation.ReasoningConditionDescriptor;
+import org.algotradex.platform.contracts.simulation.ReasoningModel;
+import org.algotradex.platform.contracts.simulation.ReasoningPhaseDescriptor;
 import org.algotradex.platform.core.api.dto.common.strategy.*;
 import org.algotradex.platform.core.api.enums.strategy.StrategyCapability;
 import org.algotradex.platform.core.api.enums.strategy.StrategyParameterType;
@@ -32,7 +36,7 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
     private static final String ALLOW_SHORTS = "allowShorts";
 
     private static final StrategyParameterSchema SCHEMA = new StrategyParameterSchema(List.of(
-            new StrategyParameterDefinition(
+            withResumePolicy(new StrategyParameterDefinition(
                     FAST_PERIOD,
                     StrategyParameterType.INTEGER,
                     "Fast EMA Period",
@@ -42,8 +46,8 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
                     BigDecimal.valueOf(2),
                     BigDecimal.valueOf(100),
                     List.of()
-            ),
-            new StrategyParameterDefinition(
+            )),
+            withResumePolicy(new StrategyParameterDefinition(
                     SLOW_PERIOD,
                     StrategyParameterType.INTEGER,
                     "Slow EMA Period",
@@ -53,8 +57,8 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
                     BigDecimal.valueOf(3),
                     BigDecimal.valueOf(250),
                     List.of()
-            ),
-            new StrategyParameterDefinition(
+            )),
+            withResumePolicy(new StrategyParameterDefinition(
                     MIN_CONFIDENCE,
                     StrategyParameterType.DECIMAL,
                     "Minimum Confidence",
@@ -64,8 +68,8 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
                     BigDecimal.ZERO,
                     BigDecimal.ONE,
                     List.of()
-            ),
-            new StrategyParameterDefinition(
+            )),
+            withResumePolicy(new StrategyParameterDefinition(
                     ALLOW_SHORTS,
                     StrategyParameterType.BOOLEAN,
                     "Allow Shorts",
@@ -75,7 +79,7 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
                     null,
                     null,
                     List.of()
-            )
+            ))
     ));
 
     private static final StrategyDescriptor DESCRIPTOR = new StrategyDescriptor(
@@ -86,7 +90,8 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
             List.of("M15", "H1", "D1"),
             List.of("EQUITY", "INDEX", "CRYPTO"),
             List.of(StrategyCapability.LONG_SIGNALS, StrategyCapability.SHORT_SIGNALS, StrategyCapability.PARAMETERIZED),
-            SCHEMA
+            SCHEMA,
+            reasoningModel()
     );
 
     @Override
@@ -123,6 +128,45 @@ public final class EmaCrossoverStrategyProvider implements StrategyProvider {
                 effective.integer(SLOW_PERIOD, 21),
                 effective.decimal(MIN_CONFIDENCE, BigDecimal.valueOf(0.68)),
                 effective.bool(ALLOW_SHORTS, false)
+        );
+    }
+
+    private static StrategyParameterDefinition withResumePolicy(StrategyParameterDefinition definition) {
+        StrategyParameterResumePolicy policy = switch (definition.key()) {
+            case FAST_PERIOD -> StrategyParameterResumePolicy.lookback(100);
+            case SLOW_PERIOD -> StrategyParameterResumePolicy.lookback(250);
+            case MIN_CONFIDENCE, ALLOW_SHORTS -> StrategyParameterResumePolicy.forwardOnly();
+            default -> StrategyParameterResumePolicy.lookback(null);
+        };
+        return new StrategyParameterDefinition(
+                definition.key(),
+                definition.type(),
+                definition.label(),
+                definition.description(),
+                definition.required(),
+                definition.defaultValue(),
+                definition.min(),
+                definition.max(),
+                definition.allowedValues(),
+                policy
+        );
+    }
+
+    private static ReasoningModel reasoningModel() {
+        return new ReasoningModel(
+                STRATEGY_VERSION + "-reasoning-v1",
+                "EMA crossover waits for seeded fast and slow EMA series, then fires when the fast EMA crosses the slow EMA.",
+                "EMA crossover phase={phase}; blocked={blocked_by}.",
+                List.of(
+                        new ReasoningPhaseDescriptor("warmup", "Warmup", "Seed the fast and slow EMA series."),
+                        new ReasoningPhaseDescriptor("scanning", "Scanning", "Track the fast/slow relationship without a cross."),
+                        new ReasoningPhaseDescriptor("signal", "Signal", "A fast/slow EMA cross fired on the current closed bar.")
+                ),
+                List.of(
+                        new ReasoningConditionDescriptor("ema-crossover.warmup", "EMA crossover warmup complete", ConditionRole.ENTRY_FILTER, true, "warmup", "Ensure indicator state is seeded before any crossover decision.", "Both EMAs are seeded", "Waiting for enough bars to seed both EMAs"),
+                        new ReasoningConditionDescriptor("ema-crossover.long-cross", "Fast EMA crossed above slow EMA", ConditionRole.ENTRY_TRIGGER, false, "signal", "Explain long crossover trigger state.", "Fast EMA crossed above slow EMA", "Fast EMA has not crossed above slow EMA"),
+                        new ReasoningConditionDescriptor("ema-crossover.short-cross", "Fast EMA crossed below slow EMA", ConditionRole.ENTRY_TRIGGER, false, "signal", "Explain short crossover trigger state.", "Fast EMA crossed below slow EMA", "Fast EMA has not crossed below slow EMA")
+                )
         );
     }
 }
