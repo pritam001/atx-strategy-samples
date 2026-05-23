@@ -2,6 +2,7 @@ package org.algotradex.strategy.samples.doflamingov4;
 
 import org.algotradex.platform.contracts.common.enums.StrategyExitRuleType;
 import org.algotradex.platform.contracts.common.enums.StrategyTradeAction;
+import org.algotradex.platform.contracts.common.enums.IntendedHorizonLabel;
 import org.algotradex.platform.contracts.common.ids.ReplayId;
 import org.algotradex.platform.contracts.common.ids.RunId;
 import org.algotradex.platform.contracts.market.BarEvent;
@@ -221,6 +222,7 @@ class DoflamingoV4StrategyBehaviorTest {
         assertThat(result.tradeIntents()).hasSize(1);
         var intent = result.tradeIntents().getFirst();
         assertThat(intent.action()).isEqualTo(StrategyTradeAction.ENTER_LONG);
+        assertThat(intent.horizon().intendedHorizonLabel()).isEqualTo(IntendedHorizonLabel.SWING);
         assertThat(intent.exit().target().type()).isEqualTo(StrategyExitRuleType.RR);
         assertThat(intent.exit().target().value()).isEqualByComparingTo("2.5000");
         assertThat(intent.reason().tags()).contains("v4", "ichimoku", "htf");

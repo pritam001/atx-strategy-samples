@@ -49,6 +49,14 @@ final class DoflamingoSignalSupport {
     private DoflamingoSignalSupport() {
     }
 
+    private static TradeIntentHorizon horizonFor(PositionSide resultingSide, int maxHoldingBars) {
+        // NSE cash: longs may carry multi-day, shorts must square off in the same session.
+        IntendedHorizonLabel label = resultingSide == PositionSide.SHORT
+                ? IntendedHorizonLabel.INTRADAY
+                : IntendedHorizonLabel.SWING;
+        return new TradeIntentHorizon(maxHoldingBars, null, label);
+    }
+
     static TradeSignal longSignal(String strategyId, String strategyVersion, StrategyExecutionContext context,
                                   BigDecimal confidence, SetupType setupType) {
         return signal(strategyId, strategyVersion, context, confidence, setupType, Direction.LONG, "long");
@@ -106,7 +114,7 @@ final class DoflamingoSignalSupport {
                 exitPolicy,
                 new TradeIntentPreconditions(true, false, PositionSide.ANY, null),
                 riskFractionSizing(riskFraction),
-                new TradeIntentHorizon(maxHoldingBars, null, IntendedHorizonLabel.INTRADAY),
+                horizonFor(PositionSide.LONG, maxHoldingBars),
                 reason,
                 evidence,
                 tags,
@@ -142,7 +150,7 @@ final class DoflamingoSignalSupport {
                 exitPolicy,
                 new TradeIntentPreconditions(true, false, PositionSide.ANY, null),
                 riskFractionSizing(riskFraction),
-                new TradeIntentHorizon(maxHoldingBars, null, IntendedHorizonLabel.INTRADAY),
+                horizonFor(PositionSide.SHORT, maxHoldingBars),
                 reason,
                 evidence,
                 tags,
@@ -358,7 +366,7 @@ final class DoflamingoSignalSupport {
                 exitPolicy,
                 new TradeIntentPreconditions(false, true, PositionSide.LONG, null),
                 riskFractionSizing(riskFraction),
-                new TradeIntentHorizon(maxHoldingBars, null, IntendedHorizonLabel.INTRADAY),
+                horizonFor(PositionSide.SHORT, maxHoldingBars),
                 reason,
                 evidence,
                 tags,
@@ -394,7 +402,7 @@ final class DoflamingoSignalSupport {
                 exitPolicy,
                 new TradeIntentPreconditions(false, true, PositionSide.SHORT, null),
                 riskFractionSizing(riskFraction),
-                new TradeIntentHorizon(maxHoldingBars, null, IntendedHorizonLabel.INTRADAY),
+                horizonFor(PositionSide.LONG, maxHoldingBars),
                 reason,
                 evidence,
                 tags,

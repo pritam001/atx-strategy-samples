@@ -4,6 +4,7 @@ import org.algotradex.platform.contracts.common.enums.StrategyEntryType;
 import org.algotradex.platform.contracts.common.enums.StrategyExitRuleType;
 import org.algotradex.platform.contracts.common.enums.StrategySizingType;
 import org.algotradex.platform.contracts.common.enums.StrategyTradeAction;
+import org.algotradex.platform.contracts.common.enums.IntendedHorizonLabel;
 import org.algotradex.platform.contracts.common.ids.ReplayId;
 import org.algotradex.platform.contracts.common.ids.RunId;
 import org.algotradex.platform.contracts.market.BarEvent;
@@ -155,6 +156,7 @@ class DoflamingoMultiIndicatorV6TrendReversalStrategyProviderTest {
         assertThat(intent.sizing().type()).isEqualTo(StrategySizingType.RISK_FRACTION);
         assertThat(intent.sizing().riskFraction()).isEqualByComparingTo("0.0100");
         assertThat(intent.horizon().maxHoldingBars()).isEqualTo(64);
+        assertThat(intent.horizon().intendedHorizonLabel()).isEqualTo(IntendedHorizonLabel.SWING);
         assertThat(intent.exit().stop().type()).isEqualTo(StrategyExitRuleType.PERCENT);
         assertThat(intent.reason().tags()).contains("doflamingo", "v3", "multi-v6", "entry", "confidence");
         assertThat(intent.reason().evidence()).contains("marketRegime=INSUFFICIENT_DATA", "skipMarketRegimes=[]");
