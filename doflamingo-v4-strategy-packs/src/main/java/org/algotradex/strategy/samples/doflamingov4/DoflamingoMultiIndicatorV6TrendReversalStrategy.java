@@ -472,32 +472,87 @@ public final class DoflamingoMultiIndicatorV6TrendReversalStrategy implements Tr
                 shortMomentum, false, close, high, state, maybeEma50, maybeTrend, maybeTrendAverage, maybeAtr, trendFilter);
         boolean riskOk = cooldownRemaining <= 0
                 && (longConfidence.compareTo(minConfidence) >= 0 || shortConfidence.compareTo(minConfidence) >= 0);
+        int momentumBreadth = Math.max(
+                confirmations(macdHistogramRising, stochKRising, stochDRising),
+                confirmations(state.macdHistogram() < state.previousMacdHistogram(), state.stochK() < state.previousStochK(), state.stochD() < state.previousStochD())
+        );
+        int filterPasses = (sessionAllowed ? 1 : 0)
+                + (portfolioAllowed ? 1 : 0)
+                + (regimeAllowed ? 1 : 0)
+                + (rsiWindowOk ? 1 : 0)
+                + (volumeOk ? 1 : 0);
+        BigDecimal maxConfidence = longConfidence.max(shortConfidence);
 
         return List.of(
-                new ThoughtConditionEvidence("psar-direction", "PSAR direction", ConditionRole.ENTRY_TRIGGER,
+                numericEvidence("psar-direction", "PSAR direction", ConditionRole.ENTRY_TRIGGER,
                         directionNowUp || directionNowDown,
+                        "PSAR",
+                        BigDecimal.valueOf(state.psar()),
+                        directionNowUp ? "<" : ">",
+                        directionNowUp ? "candle low" : "candle high",
+                        BigDecimal.valueOf(directionNowUp ? low : high),
                         directionNowUp ? "PSAR is below the candle low." : directionNowDown ? "PSAR is above the candle high." : "PSAR has not flipped cleanly."),
-                new ThoughtConditionEvidence("momentum-reset", "Momentum reset", ConditionRole.ENTRY_TRIGGER,
+                numericEvidence("momentum-reset", "Momentum reset", ConditionRole.ENTRY_TRIGGER,
                         longMomentum || shortMomentum,
-                        "MACD/Stoch reversal momentum breadth=" + Math.max(
-                                confirmations(macdHistogramRising, stochKRising, stochDRising),
-                                confirmations(state.macdHistogram() < state.previousMacdHistogram(), state.stochK() < state.previousStochK(), state.stochD() < state.previousStochD())
-                        )),
-                new ThoughtConditionEvidence("cloud-reversal", "Cloud reversal", ConditionRole.ENTRY_FILTER,
+                        "momentum breadth",
+                        BigDecimal.valueOf(momentumBreadth),
+                        ">=",
+                        "required breadth",
+                        BigDecimal.valueOf(2),
+                        "MACD/Stoch reversal momentum breadth=" + momentumBreadth),
+                numericEvidence("cloud-reversal", "Cloud reversal", ConditionRole.ENTRY_FILTER,
                         (directionNowUp && directionPrevDown && longCloud) || (directionNowDown && shortCloud),
+                        "close",
+                        BigDecimal.valueOf(close),
+                        ">",
+                        "cloud span B",
+                        BigDecimal.valueOf(state.presentSpanB()),
                         "Cloud long=" + longCloud + " short=" + shortCloud + "."),
-                new ThoughtConditionEvidence("trend-filter", "Adaptive trend filter", ConditionRole.REGIME_FILTER,
+                numericEvidence("trend-filter", "Adaptive trend filter", ConditionRole.REGIME_FILTER,
                         trendFilter,
+                        "trend score",
+                        BigDecimal.valueOf(maybeTrend.orElse(close)),
+                        ">=",
+                        "trend average",
+                        BigDecimal.valueOf(maybeTrendAverage.orElse(maybeEma50.orElse(close))),
                         trendFilter ? "Trend filter allows at least one reversal side." : "Trend filter blocks both reversal sides."),
-                new ThoughtConditionEvidence("entry-filters", "Entry filters", ConditionRole.ENTRY_FILTER,
+                numericEvidence("entry-filters", "Entry filters", ConditionRole.ENTRY_FILTER,
                         sessionAllowed && portfolioAllowed && regimeAllowed && rsiWindowOk && volumeOk,
+                        "passed filters",
+                        BigDecimal.valueOf(filterPasses),
+                        "=",
+                        "required filters",
+                        BigDecimal.valueOf(5),
                         "sessionAllowed=" + sessionAllowed + " portfolioAllowed=" + portfolioAllowed
                                 + " regimeAllowed=" + regimeAllowed + " rsiWindowOk=" + rsiWindowOk + " volumeOk=" + volumeOk),
-                new ThoughtConditionEvidence("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD,
+                numericEvidence("runtime-risk", "Runtime risk controls", ConditionRole.RISK_GUARD,
                         riskOk,
+                        "max confidence",
+                        maxConfidence,
+                        ">=",
+                        "min confidence",
+                        minConfidence,
                         "cooldownRemaining=" + cooldownRemaining + " longConfidence=" + longConfidence
                                 + " shortConfidence=" + shortConfidence + " minConfidence=" + minConfidence)
         );
+    }
+
+    private static ThoughtConditionEvidence numericEvidence(
+            String id,
+            String label,
+            ConditionRole role,
+            boolean passed,
+            String leftName,
+            BigDecimal leftValue,
+            String operator,
+            String rightName,
+            BigDecimal rightValue,
+            String message
+    ) {
+        BigDecimal left = leftValue.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal right = rightValue.setScale(4, RoundingMode.HALF_UP);
+        BigDecimal distance = passed ? null : right.subtract(left).abs();
+        return new ThoughtConditionEvidence(id, label, role, passed, leftName, left, operator, rightName, right, distance, message);
     }
 
     @Override

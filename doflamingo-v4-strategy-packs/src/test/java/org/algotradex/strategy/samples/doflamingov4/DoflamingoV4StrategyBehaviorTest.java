@@ -101,10 +101,14 @@ class DoflamingoV4StrategyBehaviorTest {
 
         StrategyReasoningEvaluator reasoning = (StrategyReasoningEvaluator) strategy;
         var context = DoflamingoStrategyTestSupport.context(
-                DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars().subList(0, 10)
+                DoflamingoStrategyTestSupport.multiIndicatorV6SetupBars()
         );
 
-        assertThat(reasoning.evaluateReasoning(context)).isNotEmpty();
+        var evidence = reasoning.evaluateReasoning(context);
+        assertThat(evidence).isNotEmpty();
+        assertThat(evidence)
+                .anySatisfy(condition -> assertThat(condition.leftName()).isNotBlank())
+                .anySatisfy(condition -> assertThat(condition.distanceToFire()).isNotNull());
         assertThat(reasoning.currentPhase(context)).isNotBlank().isIn(trendV4PhaseIds());
     }
 

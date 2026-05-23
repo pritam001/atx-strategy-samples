@@ -1216,7 +1216,11 @@ atrExpansionMultiple: 1.05
 riskFraction: 0.003
 maxRiskFractionAfterScaleIn: 0.007
 atrPeriod: 14
-initialAtrStopMultiple: 1.80
+initialAtrStopMultiple: 2.75
+atrPercentileStopScaling: true
+atrStopPercentileLookbackBars: 60
+minAtrStopMultiple: 2.50
+maxAtrStopMultiple: 3.00
 cloudStopBufferAtr: 0.35
 chandelierLookbackBars: 22
 chandelierAtrMultiple: 3.00
@@ -1241,7 +1245,7 @@ scaleInRequiresNewExtreme: true
 # Holding horizon
 staleBars: 20
 staleMinR: 0.50
-maxHoldingBars: 64          # H1 bars, roughly 8 trading days
+maxHoldingBars: 96          # H1 bars, roughly 12 trading days
 cooldownBars: 6
 structureExitConfirmBars: 2
 
@@ -1458,7 +1462,8 @@ Do not simulate entering at the same bar close unless explicitly supported by th
 
 ```text
 cloudStop = min(execution cloudFloor, baseLine) - cloudStopBufferAtr * ATR
-atrStop = entry - initialAtrStopMultiple * ATR
+effectiveAtrStopMultiple = percentile scale between minAtrStopMultiple and maxAtrStopMultiple
+atrStop = entry - effectiveAtrStopMultiple * ATR
 swingStop = lastSwingLow(10 to 20 bars) - 0.35 * ATR
 dailyStructureStop = D1 baseLine or D1 cloudFloor if close enough
 ```
@@ -1480,7 +1485,8 @@ stopPct > maxStopPct
 
 ```text
 cloudStop = max(execution cloudTop, baseLine) + cloudStopBufferAtr * ATR
-atrStop = entry + initialAtrStopMultiple * ATR
+effectiveAtrStopMultiple = percentile scale between minAtrStopMultiple and maxAtrStopMultiple
+atrStop = entry + effectiveAtrStopMultiple * ATR
 swingStop = lastSwingHigh(10 to 20 bars) + 0.35 * ATR
 dailyStructureStop = D1 baseLine or D1 cloudTop if close enough
 ```
@@ -1588,16 +1594,19 @@ scale-in confidence < scaleInMinConfidence
 ```text
 STOP:
   low <= activeStop
+  A synthetic currentR <= -1 plan-stop is not a hard swing lifecycle exit.
+  If the active stop has not been reached and structure remains valid, hold.
 
 EXECUTION CLOUD BREAK:
   close < execution cloudFloor for structureExitConfirmBars
 
-DAILY STRUCTURE BREAK:
-  D1 close < D1 baseLine
-  OR D1 close < D1 cloudFloor
+HIGHER-TIMEFRAME CLOUD BREAK:
+  D1 close < D1 cloudFloor when D1 lifecycle context is implemented
 
-BASELINE BREAK:
-  conversionLine < baseLine for structureExitConfirmBars
+BASELINE / KIJUN PULLBACK:
+  close below baseLine or conversionLine < baseLine is not a hard swing exit.
+  Treat it as pullback or pressure evidence only. A swing long remains valid
+  while price is above the execution cloudFloor and no other lifecycle exit fires.
 
 MOMENTUM DECAY:
   MACD histogram falling for 3 bars
@@ -1627,16 +1636,19 @@ TIME STOP:
 ```text
 STOP:
   high >= activeStop
+  A synthetic currentR <= -1 plan-stop is not a hard swing lifecycle exit.
+  If the active stop has not been reached and structure remains valid, hold.
 
 EXECUTION CLOUD RECLAIM:
   close > execution cloudTop for structureExitConfirmBars
 
-DAILY STRUCTURE BREAK:
-  D1 close > D1 baseLine
-  OR D1 close > D1 cloudTop
+HIGHER-TIMEFRAME CLOUD RECLAIM:
+  D1 close > D1 cloudTop when D1 lifecycle context is implemented
 
-BASELINE BREAK:
-  conversionLine > baseLine for structureExitConfirmBars
+BASELINE / KIJUN PULLBACK:
+  close above baseLine or conversionLine > baseLine is not a hard swing exit.
+  Treat it as pullback or pressure evidence only. A swing short remains valid
+  while price is below the execution cloudTop and no other lifecycle exit fires.
 
 MOMENTUM DECAY:
   MACD histogram rising for 3 bars
@@ -2003,7 +2015,7 @@ Earnings/news shock:
 
 Sector rotation reversal:
   Mapped context remains bullish while flows rotate away.
-  Mitigation: faster primary-timeframe momentum decay and context baseline exits.
+  Mitigation: faster primary-timeframe momentum decay and higher-timeframe cloud invalidation.
 
 Illiquid stock behavior:
   Wide gaps and low volume distort ATR/cloud signals.
@@ -2082,7 +2094,7 @@ parameters:
   contextCloudBiasMode: REQUIRE_AGREEMENT
   entryMode: PULLBACK_RESUME
   riskFraction: 0.0025
-  initialAtrStopMultiple: 2.0
+  initialAtrStopMultiple: 3.0
   maxStopPct: 5.0
   initialTargetR: 3.0
   enableScaleOut: true
@@ -2100,7 +2112,7 @@ parameters:
   contextCloudBiasMode: PREFER_AGREEMENT
   entryMode: HYBRID
   riskFraction: 0.0035
-  initialAtrStopMultiple: 1.7
+  initialAtrStopMultiple: 2.5
   maxStopPct: 6.0
   initialTargetR: 3.5
   enableScaleOut: true

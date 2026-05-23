@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import static java.util.Objects.requireNonNull;
 
@@ -144,7 +145,7 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         }
 
         EntryCandidate longCandidate = evaluateSide(context, primary, snapshot, contextSnapshot, PositionSide.LONG);
-        EntryCandidate shortCandidate = evaluateSide(context, primary, snapshot, contextSnapshot, PositionSide.SHORT);
+        EntryCandidate shortCandidate = evaluateShortCandidate(context, primary, snapshot, contextSnapshot);
         Optional<EntryCandidate> selected = selectCandidate(longCandidate, shortCandidate);
         if (selected.isEmpty()) {
             EntryCandidate best = longCandidate.confidence().compareTo(shortCandidate.confidence()) >= 0 ? longCandidate : shortCandidate;
@@ -178,6 +179,7 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         boolean bullish = side == PositionSide.LONG;
         boolean contextOk = contextBiasOk(contextSnapshot, bullish);
         boolean contextAligned = contextSnapshot.map(value -> bullish ? "BULLISH".equals(value.cloudBias()) : "BEARISH".equals(value.cloudBias())).orElse(false);
+        boolean contextCompatible = contextSnapshot.map(value -> bullish ? !"BEARISH".equals(value.cloudBias()) : !"BULLISH".equals(value.cloudBias())).orElse(false);
         boolean cloudStructure = bullish
                 ? snapshot.close() > snapshot.ichimoku().cloudTop()
                 && "BULLISH".equals(snapshot.ichimoku().futureBias())
@@ -217,15 +219,17 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         boolean momentum = confirmations >= 2;
         boolean participation = participationOk(context.currentBar(), snapshot);
         double distanceAtr = priceDistanceFromCloudAtr(snapshot, bullish);
-        boolean overextensionNormal = distanceAtr <= params.maxEntryAtrFromCloudTop().doubleValue();
-        boolean overextensionStrong = distanceAtr <= params.maxEntryAtrFromCloudTopStrongVolume().doubleValue()
+        boolean antiChaseDisabled = params.maxEntryAtrFromCloudTop().signum() <= 0;
+        boolean overextensionNormal = !antiChaseDisabled && distanceAtr <= params.maxEntryAtrFromCloudTop().doubleValue();
+        boolean overextensionStrong = params.maxEntryAtrFromCloudTopStrongVolume().signum() > 0
+                && distanceAtr <= params.maxEntryAtrFromCloudTopStrongVolume().doubleValue()
                 && snapshot.volumePulse() >= params.strongVolumePulseMultiple().doubleValue()
                 && (bullish ? snapshot.macd().histogram() > snapshot.macd().previousHistogram()
                 : snapshot.macd().histogram() < snapshot.macd().previousHistogram());
-        boolean antiChase = overextensionNormal || overextensionStrong;
+        boolean antiChase = antiChaseDisabled || overextensionNormal || overextensionStrong;
         StopComputation stop = stop(primary, snapshot, side);
         boolean stopQuality = stop.valid();
-        BigDecimal confidence = confidence(snapshot, contextAligned, contextOk, cloudStructure, cloudQuality,
+        BigDecimal confidence = confidence(snapshot, contextAligned, contextCompatible, cloudStructure, cloudQuality,
                 emaStructure, macd, stoch, psar, participation, antiChase, stopQuality);
         boolean confidenceOk = confidence.compareTo(params.minConfidence()) >= 0;
         boolean accepted = contextOk && cloudStructure && cloudQuality && emaStructure && momentum
@@ -244,34 +248,50 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
                 confidenceOk, rejectionCode, detail(rejectionCode, side), setupType(pullbackResume, breakout, earlyTransition));
     }
 
+    private EntryCandidate evaluateShortCandidate(
+            StrategyExecutionContext context,
+            List<BarEvent> primary,
+            DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot,
+            Optional<DoflamingoMomentumV5IndicatorMath.MarketSnapshot> contextSnapshot
+    ) {
+        EntryCandidate candidate = evaluateSide(context, primary, snapshot, contextSnapshot, PositionSide.SHORT);
+        return params.allowShorts() || !candidate.accepted() ? candidate : candidate.withPolicyRejection(
+                "shortsDisabled",
+                "Swing short entries are disabled by default for this strategy profile."
+        );
+    }
+
     private StrategyIntentResult lifecycleResult(StrategyExecutionContext context, StrategyInstrumentPosition position) {
+        List<BarEvent> primary = context.history(context.currentBar().timeframe());
         Optional<DoflamingoMomentumV5IndicatorMath.MarketSnapshot> maybeSnapshot =
-                DoflamingoMomentumV5IndicatorMath.snapshot(context.history(context.currentBar().timeframe()), params);
+                DoflamingoMomentumV5IndicatorMath.snapshot(primary, params);
         PositionSide side = position.side();
         boolean bullish = side == PositionSide.LONG;
         if (params.variant() == DoflamingoMomentumV5Parameters.Variant.INTRADAY && eodFlattenDue(context.currentBar())) {
             return lifecycleIntent(context, position, maybeSnapshot, bullish ? "EXIT_LONG_EOD" : "EXIT_SHORT_EOD", "Intraday force-exit time reached.");
         }
-        if (position.currentRMultiple() != null && position.currentRMultiple().compareTo(BigDecimal.valueOf(-1.0)) <= 0) {
+        if (params.variant() == DoflamingoMomentumV5Parameters.Variant.INTRADAY
+                && position.currentRMultiple() != null
+                && position.currentRMultiple().compareTo(BigDecimal.valueOf(-1.0)) <= 0) {
             return lifecycleIntent(context, position, maybeSnapshot, bullish ? "EXIT_LONG_STOP" : "EXIT_SHORT_STOP", "Position reached the stop-risk boundary.");
         }
         if (maybeSnapshot.isPresent()) {
             DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot = maybeSnapshot.get();
-            boolean structureBreak = bullish
-                    ? snapshot.close() < snapshot.ichimoku().cloudFloor() || snapshot.ichimoku().conversionLine() < snapshot.ichimoku().baseLine()
-                    : snapshot.close() > snapshot.ichimoku().cloudTop() || snapshot.ichimoku().conversionLine() > snapshot.ichimoku().baseLine();
+            boolean structureBreak = confirmedCloudBreak(primary, bullish)
+                    || (params.variant() == DoflamingoMomentumV5Parameters.Variant.INTRADAY && confirmedBaselineBreak(primary, bullish));
             if (structureBreak) {
+                String summary = params.variant() == DoflamingoMomentumV5Parameters.Variant.INTRADAY
+                        ? "Confirmed cloud or baseline structure broke against the position."
+                        : "Confirmed cloud structure broke against the position.";
                 return lifecycleIntent(context, position, maybeSnapshot,
-                        bullish ? "EXIT_LONG_STRUCTURE_BREAK" : "EXIT_SHORT_STRUCTURE_BREAK", "Cloud or conversion/base structure broke against the position.");
+                        bullish ? "EXIT_LONG_STRUCTURE_BREAK" : "EXIT_SHORT_STRUCTURE_BREAK", summary);
             }
-            boolean momentumDecay = bullish
-                    ? snapshot.close() < snapshot.emaMid() && snapshot.macd().histogram() < snapshot.macd().previousHistogram()
-                    : snapshot.close() > snapshot.emaMid() && snapshot.macd().histogram() > snapshot.macd().previousHistogram();
+            boolean momentumDecay = momentumDecay(snapshot, bullish);
             if (momentumDecay) {
                 return lifecycleIntent(context, position, maybeSnapshot,
-                        bullish ? "EXIT_LONG_MOMENTUM_DECAY" : "EXIT_SHORT_MOMENTUM_DECAY", "EMA/MACD momentum decay invalidated the runner.");
+                        bullish ? "EXIT_LONG_MOMENTUM_DECAY" : "EXIT_SHORT_MOMENTUM_DECAY", "EMA and three-bar MACD histogram decay invalidated the runner.");
             }
-            boolean chandelierBreak = chandelierBreak(context.history(context.currentBar().timeframe()), snapshot, bullish);
+            boolean chandelierBreak = chandelierBreak(primary, snapshot, bullish);
             if (chandelierBreak && rMultiple(position).compareTo(BigDecimal.ONE) >= 0) {
                 return lifecycleIntent(context, position, maybeSnapshot,
                         bullish ? "EXIT_LONG_STRUCTURE_BREAK" : "EXIT_SHORT_STRUCTURE_BREAK", "Chandelier runner invalidation fired.");
@@ -298,7 +318,7 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         }
         if (params.enableScaleIn() && position.scaleInCount() < params.maxScaleIns()
                 && rMultiple(position).compareTo(params.scaleInAtR()) >= 0
-                && maybeSnapshot.map(snapshot -> alignedWithCloud(snapshot, bullish) && renewedExtreme(context.history(context.currentBar().timeframe()), snapshot, bullish)).orElse(false)) {
+                && maybeSnapshot.map(snapshot -> alignedWithCloud(snapshot, bullish) && renewedExtreme(primary, snapshot, bullish)).orElse(false)) {
             StrategyTradeIntent intent = DoflamingoMomentumV5IntentSupport.scaleInIntent(
                     params,
                     context,
@@ -360,6 +380,7 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         evidence.add("psarDirection=" + (snapshot.psarBullish() ? "BULLISH" : "BEARISH"));
         evidence.add("volumePulse=" + decimal(snapshot.volumePulse()));
         evidence.add("atr=" + decimal(snapshot.atr()));
+        evidence.add("atrStopMultiple=" + candidate.stop().atrStopMultiple());
         evidence.add("priceDistanceFromCloudAtr=" + decimal(candidate.priceDistanceFromCloudAtr()));
         evidence.add("initialStop=" + candidate.stop().stopPrice());
         evidence.add("stopPct=" + candidate.stop().stopPct());
@@ -531,7 +552,7 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         if (params.contextBiasMode() == DoflamingoMomentumV5Parameters.BiasMode.REQUIRE_AGREEMENT) {
             return bullish ? "BULLISH".equals(bias) : "BEARISH".equals(bias);
         }
-        return bullish ? !"BEARISH".equals(bias) : !"BULLISH".equals(bias);
+        return true;
     }
 
     private boolean participationOk(BarEvent bar, DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot) {
@@ -588,12 +609,13 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         boolean bullish = side == PositionSide.LONG;
         double entry = snapshot.close();
         double buffer = params.cloudStopBufferAtr().doubleValue() * snapshot.safeAtr();
+        double atrStopMultiple = effectiveAtrStopMultiple(primary, snapshot);
         double cloudStop = bullish
                 ? Math.min(snapshot.ichimoku().cloudFloor(), snapshot.ichimoku().baseLine()) - buffer
                 : Math.max(snapshot.ichimoku().cloudTop(), snapshot.ichimoku().baseLine()) + buffer;
         double atrStop = bullish
-                ? entry - params.initialAtrStopMultiple().doubleValue() * snapshot.safeAtr()
-                : entry + params.initialAtrStopMultiple().doubleValue() * snapshot.safeAtr();
+                ? entry - atrStopMultiple * snapshot.safeAtr()
+                : entry + atrStopMultiple * snapshot.safeAtr();
         double swingStop = bullish
                 ? DoflamingoMomentumV5IndicatorMath.lowestLow(primary, snapshot.index(), params.variant() == DoflamingoMomentumV5Parameters.Variant.SWING ? 20 : 10) - buffer
                 : DoflamingoMomentumV5IndicatorMath.highestHigh(primary, snapshot.index(), params.variant() == DoflamingoMomentumV5Parameters.Variant.SWING ? 20 : 10) + buffer;
@@ -605,13 +627,44 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
                 && (bullish ? selected < entry : selected > entry)
                 && stopPct.compareTo(params.minStopPct()) >= 0
                 && stopPct.compareTo(params.maxStopPct()) <= 0;
-        return new StopComputation(decimal(selected), stopPct, valid);
+        return new StopComputation(decimal(selected), stopPct, valid, decimal(atrStopMultiple));
+    }
+
+    private double effectiveAtrStopMultiple(List<BarEvent> primary, DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot) {
+        double configured = params.initialAtrStopMultiple().doubleValue();
+        if (params.variant() != DoflamingoMomentumV5Parameters.Variant.SWING || !params.atrPercentileStopScaling()) {
+            return configured;
+        }
+        double min = params.minAtrStopMultiple().doubleValue();
+        double max = params.maxAtrStopMultiple().doubleValue();
+        if (!Double.isFinite(min) || !Double.isFinite(max) || max <= min) {
+            return configured;
+        }
+        int lookback = Math.max(1, params.atrStopPercentileLookbackBars());
+        int start = Math.max(params.atrPeriod(), snapshot.index() - lookback + 1);
+        int observations = 0;
+        int belowOrEqual = 0;
+        for (int candidate = start; candidate <= snapshot.index(); candidate++) {
+            OptionalDouble atr = DoflamingoMomentumV5IndicatorMath.atr(primary, candidate, params.atrPeriod());
+            if (atr.isEmpty() || !Double.isFinite(atr.getAsDouble())) {
+                continue;
+            }
+            observations++;
+            if (atr.getAsDouble() <= snapshot.atr()) {
+                belowOrEqual++;
+            }
+        }
+        if (observations < 3) {
+            return Math.max(min, Math.min(max, configured));
+        }
+        double percentile = (double) belowOrEqual / (double) observations;
+        return min + (max - min) * percentile;
     }
 
     private BigDecimal confidence(
             DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot,
             boolean contextAligned,
-            boolean contextOk,
+            boolean contextCompatible,
             boolean cloudStructure,
             boolean cloudQuality,
             boolean emaStructure,
@@ -624,13 +677,13 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
     ) {
         double score = 0.0d;
         if (params.variant() == DoflamingoMomentumV5Parameters.Variant.SWING) {
-            score += contextAligned ? 25.0d : contextOk ? 12.0d : 0.0d;
+            score += contextAligned ? 25.0d : contextCompatible ? 12.0d : 0.0d;
             score += cloudStructure ? 19.0d : 0.0d;
             score += cloudQuality ? 6.0d : 0.0d;
         } else {
             score += cloudStructure ? 24.0d : 0.0d;
             score += cloudQuality ? 6.0d : 0.0d;
-            score += contextAligned ? 15.0d : contextOk ? 7.0d : 0.0d;
+            score += contextAligned ? 15.0d : contextCompatible ? 7.0d : 0.0d;
         }
         score += emaStructure ? 8.0d : 0.0d;
         score += macd ? 13.0d : 0.0d;
@@ -647,6 +700,48 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
         return bullish
                 ? snapshot.close() > snapshot.ichimoku().cloudTop() && "BULLISH".equals(snapshot.ichimoku().futureBias())
                 : snapshot.close() < snapshot.ichimoku().cloudFloor() && "BEARISH".equals(snapshot.ichimoku().futureBias());
+    }
+
+    private boolean confirmedCloudBreak(List<BarEvent> primary, boolean bullish) {
+        return confirmedStructureBreak(primary, snapshot -> bullish
+                ? snapshot.close() < snapshot.ichimoku().cloudFloor()
+                : snapshot.close() > snapshot.ichimoku().cloudTop());
+    }
+
+    private boolean confirmedBaselineBreak(List<BarEvent> primary, boolean bullish) {
+        return confirmedStructureBreak(primary, snapshot -> bullish
+                ? snapshot.close() < snapshot.ichimoku().baseLine()
+                : snapshot.close() > snapshot.ichimoku().baseLine());
+    }
+
+    private boolean confirmedStructureBreak(
+            List<BarEvent> primary,
+            java.util.function.Predicate<DoflamingoMomentumV5IndicatorMath.MarketSnapshot> predicate
+    ) {
+        int confirmBars = Math.max(1, params.structureExitConfirmBars());
+        if (primary.size() < confirmBars) {
+            return false;
+        }
+        for (int offset = confirmBars; offset > 0; offset--) {
+            int endExclusive = primary.size() - offset + 1;
+            Optional<DoflamingoMomentumV5IndicatorMath.MarketSnapshot> snapshot =
+                    DoflamingoMomentumV5IndicatorMath.snapshot(primary.subList(0, endExclusive), params);
+            if (snapshot.isEmpty() || !predicate.test(snapshot.get())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean momentumDecay(DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot, boolean bullish) {
+        DoflamingoMomentumV5IndicatorMath.MacdSnapshot macd = snapshot.macd();
+        return bullish
+                ? snapshot.close() < snapshot.emaMid()
+                && macd.histogram() < macd.previousHistogram()
+                && macd.previousHistogram() < macd.secondPreviousHistogram()
+                : snapshot.close() > snapshot.emaMid()
+                && macd.histogram() > macd.previousHistogram()
+                && macd.previousHistogram() > macd.secondPreviousHistogram();
     }
 
     private boolean renewedExtreme(List<BarEvent> primary, DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot, boolean bullish) {
@@ -851,8 +946,13 @@ abstract class DoflamingoMomentumV5Strategy implements TradeIntentStrategy, Resu
             String rejectionDetail,
             org.algotradex.platform.contracts.intelligence.SetupType setupType
     ) {
+        EntryCandidate withPolicyRejection(String rejectionCode, String rejectionDetail) {
+            return new EntryCandidate(side, false, confidence, stop, momentumConfirmations, priceDistanceFromCloudAtr, contextOk,
+                    cloudStructure, cloudQuality, emaStructure, macd, stoch, psar, participation, antiChase,
+                    confidenceOk, rejectionCode, rejectionDetail, setupType);
+        }
     }
 
-    private record StopComputation(BigDecimal stopPrice, BigDecimal stopPct, boolean valid) {
+    private record StopComputation(BigDecimal stopPrice, BigDecimal stopPct, boolean valid, BigDecimal atrStopMultiple) {
     }
 }

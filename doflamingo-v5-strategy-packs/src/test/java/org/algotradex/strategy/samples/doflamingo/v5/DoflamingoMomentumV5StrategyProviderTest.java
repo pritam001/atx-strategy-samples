@@ -111,8 +111,18 @@ class DoflamingoMomentumV5StrategyProviderTest {
         assertThat(validation.valid()).isTrue();
         assertThat(validation.effectiveParameters().decimal("riskFraction", BigDecimal.ZERO)).isEqualByComparingTo("0.003");
         assertThat(validation.effectiveParameters().string("horizonMode", "")).isEqualTo("SWING");
+        assertThat(validation.effectiveParameters().decimal("initialAtrStopMultiple", BigDecimal.ZERO)).isEqualByComparingTo("2.75");
+        assertThat(validation.effectiveParameters().bool("atrPercentileStopScaling", false)).isTrue();
+        assertThat(validation.effectiveParameters().integer("atrStopPercentileLookbackBars", 0)).isEqualTo(60);
+        assertThat(validation.effectiveParameters().decimal("minAtrStopMultiple", BigDecimal.ZERO)).isEqualByComparingTo("2.50");
+        assertThat(validation.effectiveParameters().decimal("maxAtrStopMultiple", BigDecimal.ZERO)).isEqualByComparingTo("3.00");
         assertThat(validation.effectiveParameters().decimal("initialTargetR", BigDecimal.ZERO)).isEqualByComparingTo("3.00");
+        assertThat(validation.effectiveParameters().integer("maxHoldingBars", 0)).isEqualTo(96);
         assertThat(validation.effectiveParameters().bool("allowOvernight", false)).isTrue();
+        assertThat(validation.effectiveParameters().string("contextCloudBiasMode", "")).isEqualTo("PREFER_AGREEMENT");
+        assertThat(validation.effectiveParameters().decimal("maxEntryAtrFromCloudTop", BigDecimal.ONE)).isEqualByComparingTo("0.00");
+        assertThat(validation.effectiveParameters().decimal("maxEntryAtrFromCloudTopStrongVolume", BigDecimal.ONE)).isEqualByComparingTo("0.00");
+        assertThat(validation.effectiveParameters().bool("allowShorts", true)).isFalse();
     }
 
     @Test
@@ -244,10 +254,11 @@ class DoflamingoMomentumV5StrategyProviderTest {
         TradeIntentStrategy strategy = swingStrategy(Map.of(
                 "maxEntryAtrFromCloudTop", "30.00",
                 "maxEntryAtrFromCloudTopStrongVolume", "40.00",
-                "initialAtrStopMultiple", "0.50"
+                "initialAtrStopMultiple", "0.50",
+                "atrPercentileStopScaling", false
         ));
-        List<BarEvent> primary = momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true);
-        List<BarEvent> d1 = momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true);
+        List<BarEvent> primary = momentumBars("H1", 24, Instant.parse("2026-04-10T03:45:00Z"), true);
+        List<BarEvent> d1 = momentumBars("D1", 24, Instant.parse("2026-03-01T03:45:00Z"), true);
 
         StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("D1", d1)));
 
@@ -257,7 +268,7 @@ class DoflamingoMomentumV5StrategyProviderTest {
         assertThat(intent.action()).isEqualTo(StrategyTradeAction.ENTER_LONG);
         assertThat(intent.sizing().riskFraction()).isEqualByComparingTo("0.0030");
         assertThat(intent.horizon().intendedHorizonLabel()).isEqualTo(org.algotradex.platform.contracts.common.enums.IntendedHorizonLabel.SWING);
-        assertThat(intent.horizon().maxHoldingBars()).isEqualTo(64);
+        assertThat(intent.horizon().maxHoldingBars()).isEqualTo(96);
         assertThat(intent.reason().tags()).contains("doflamingo", "v5-beta", "swing", "momentum", "entry", "lifecycle");
         assertThat(intent.reason().evidence()).contains(
                 "eventType=ENTER_LONG",
@@ -271,11 +282,36 @@ class DoflamingoMomentumV5StrategyProviderTest {
     }
 
     @Test
+    void swingEntryEvidenceShowsAtrPercentileScaledStopMultiple() {
+        TradeIntentStrategy strategy = swingStrategy(Map.of(
+                "maxEntryAtrFromCloudTop", "0.00",
+                "maxEntryAtrFromCloudTopStrongVolume", "0.00",
+                "initialAtrStopMultiple", "0.75",
+                "minAtrStopMultiple", "0.50",
+                "maxAtrStopMultiple", "1.00",
+                "atrStopPercentileLookbackBars", 20,
+                "maxStopPct", "20.00"
+        ));
+        List<BarEvent> primary = momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true);
+        List<BarEvent> d1 = momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true);
+
+        StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("D1", d1)));
+
+        assertThat(result.tradeIntents()).as("diagnostics=%s", result.diagnostics()).hasSize(1);
+        List<String> evidence = result.tradeIntents().getFirst().reason().evidence();
+        assertThat(evidence).anyMatch(value -> value.startsWith("atrStopMultiple="));
+        assertThat(evidenceDecimal(evidence, "atrStopMultiple="))
+                .isGreaterThan(new BigDecimal("0.7500"))
+                .isLessThanOrEqualTo(new BigDecimal("1.0000"));
+    }
+
+    @Test
     void swingUsesMappedContextForSelectedPrimaryTimeframe() {
         TradeIntentStrategy strategy = swingStrategy(Map.of(
                 "maxEntryAtrFromCloudTop", "30.00",
                 "maxEntryAtrFromCloudTopStrongVolume", "40.00",
-                "initialAtrStopMultiple", "0.50"
+                "initialAtrStopMultiple", "0.50",
+                "atrPercentileStopScaling", false
         ));
         List<BarEvent> primary = momentumBars("M15", 32, Instant.parse("2026-04-10T03:45:00Z"), true);
         List<BarEvent> h1 = momentumBars("H1", 32, Instant.parse("2026-04-08T03:45:00Z"), true);
@@ -290,6 +326,144 @@ class DoflamingoMomentumV5StrategyProviderTest {
         );
     }
 
+    @Test
+    void swingTreatsAntiChaseZeroAsDisabled() {
+        TradeIntentStrategy strategy = swingStrategy(Map.of(
+                "maxEntryAtrFromCloudTop", "0.00",
+                "maxEntryAtrFromCloudTopStrongVolume", "0.00",
+                "initialAtrStopMultiple", "0.50",
+                "atrPercentileStopScaling", false
+        ));
+        List<BarEvent> primary = momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true);
+        List<BarEvent> d1 = momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true);
+
+        StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("D1", d1)));
+
+        assertThat(result.tradeIntents()).as("diagnostics=%s", result.diagnostics()).hasSize(1);
+        assertThat(result.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.ENTER_LONG);
+    }
+
+    @Test
+    void swingPrefersContextAgreementButDoesNotHardBlockOpposingContext() {
+        TradeIntentStrategy strategy = swingStrategy(Map.of(
+                "maxEntryAtrFromCloudTop", "0.00",
+                "maxEntryAtrFromCloudTopStrongVolume", "0.00",
+                "initialAtrStopMultiple", "0.50",
+                "atrPercentileStopScaling", false
+        ));
+        List<BarEvent> primary = momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true);
+        List<BarEvent> d1 = momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), false);
+
+        StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("D1", d1)));
+
+        assertThat(result.tradeIntents()).as("diagnostics=%s", result.diagnostics()).hasSize(1);
+        assertThat(result.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.ENTER_LONG);
+        assertThat(result.tradeIntents().getFirst().reason().evidence()).contains("contextCloudBias=BEARISH");
+    }
+
+    @Test
+    void swingShortsAreDisabledByDefaultButCanBeOptedIn() {
+        List<BarEvent> primary = momentumBars("H1", 24, Instant.parse("2026-04-10T03:45:00Z"), false);
+        List<BarEvent> d1 = momentumBars("D1", 24, Instant.parse("2026-03-01T03:45:00Z"), false);
+
+        StrategyIntentResult defaultResult = swingStrategy(Map.of(
+                "maxEntryAtrFromCloudTop", "0.00",
+                "maxEntryAtrFromCloudTopStrongVolume", "0.00",
+                "initialAtrStopMultiple", "0.50",
+                "atrPercentileStopScaling", false,
+                "maxStopPct", "20.00"
+        )).onBarIntent(context(primary, Map.of("D1", d1)));
+
+        assertThat(defaultResult.tradeIntents()).as("diagnostics=%s", defaultResult.diagnostics()).isEmpty();
+        assertThat(defaultResult.diagnostics()).anyMatch(value -> value.contains("shortsDisabled"));
+
+        StrategyIntentResult optInResult = swingStrategy(Map.of(
+                "allowShorts", true,
+                "maxEntryAtrFromCloudTop", "0.00",
+                "maxEntryAtrFromCloudTopStrongVolume", "0.00",
+                "initialAtrStopMultiple", "0.50",
+                "atrPercentileStopScaling", false,
+                "maxStopPct", "20.00"
+        )).onBarIntent(context(primary, Map.of("D1", d1)));
+
+        assertThat(optInResult.tradeIntents()).as("diagnostics=%s", optInResult.diagnostics()).hasSize(1);
+        assertThat(optInResult.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.ENTER_SHORT);
+    }
+
+    @Test
+    void swingStructureExitRequiresConfiguredConsecutiveBreakBars() {
+        TradeIntentStrategy strategy = swingStrategy(Map.of(
+                "structureExitConfirmBars", 2,
+                "enableScaleOut", false,
+                "maxHoldingBars", 100,
+                "staleBars", 100
+        ));
+        List<BarEvent> oneBreak = appendAdverseBars(momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true), 1, true);
+        List<BarEvent> twoBreaks = appendAdverseBars(momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true), 2, true);
+
+        StrategyIntentResult oneBreakResult = strategy.onBarIntent(context(oneBreak, Map.of("D1", momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true)),
+                position(PositionSide.LONG, 10, 0.50d, 0, 0, 3.0d, 0.2d)));
+        StrategyIntentResult twoBreakResult = strategy.onBarIntent(context(twoBreaks, Map.of("D1", momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true)),
+                position(PositionSide.LONG, 10, 0.50d, 0, 0, 3.0d, 0.2d)));
+
+        assertThat(oneBreakResult.tradeIntents()).as("diagnostics=%s", oneBreakResult.diagnostics()).isEmpty();
+        assertThat(twoBreakResult.tradeIntents()).as("diagnostics=%s", twoBreakResult.diagnostics()).hasSize(1);
+        assertThat(twoBreakResult.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_LONG);
+        assertThat(twoBreakResult.tradeIntents().getFirst().reason().evidence()).contains("eventType=EXIT_LONG_STRUCTURE_BREAK");
+    }
+
+    @Test
+    void swingDoesNotHardExitOnPlanStopWhenStructureRemainsBullish() {
+        TradeIntentStrategy strategy = swingStrategy(Map.of(
+                "enableScaleOut", false,
+                "maxHoldingBars", 100,
+                "staleBars", 100
+        ));
+        List<BarEvent> primary = momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true);
+        List<BarEvent> d1 = momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true);
+
+        StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("D1", d1),
+                position(PositionSide.LONG, 10, -1.10d, 0, 0, 3.0d, 1.5d)));
+
+        assertThat(result.tradeIntents()).as("diagnostics=%s", result.diagnostics()).isEmpty();
+    }
+
+    @Test
+    void intradayStillHardExitsOnPlanStop() {
+        TradeIntentStrategy strategy = intradayStrategy(Map.of());
+        List<BarEvent> primary = momentumBars("M15", 28, Instant.parse("2026-04-12T21:30:00Z"), true);
+        List<BarEvent> h1 = momentumBars("H1", 28, Instant.parse("2026-04-10T03:45:00Z"), true);
+
+        StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("H1", h1),
+                position(PositionSide.LONG, 8, -1.10d, 0, 0, 3.0d, 1.5d)));
+
+        assertThat(result.tradeIntents()).hasSize(1);
+        assertThat(result.tradeIntents().getFirst().action()).isEqualTo(StrategyTradeAction.EXIT_LONG);
+        assertThat(result.tradeIntents().getFirst().reason().evidence()).contains("eventType=EXIT_LONG_STOP");
+    }
+
+    @Test
+    void swingDoesNotHardExitOnConfirmedBaselineBreakAboveCloudFloor() {
+        Map<String, Object> overrides = Map.of(
+                "structureExitConfirmBars", 2,
+                "enableScaleOut", false,
+                "maxHoldingBars", 100,
+                "staleBars", 100
+        );
+        TradeIntentStrategy strategy = swingStrategy(overrides);
+        List<BarEvent> primary = appendBaselineOnlyBreakBars(momentumBars("H1", 32, Instant.parse("2026-04-10T03:45:00Z"), true), 2, overrides);
+        DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot = DoflamingoMomentumV5IndicatorMath.snapshot(primary, swingParameters(overrides))
+                .orElseThrow();
+
+        assertThat(snapshot.close()).isLessThan(snapshot.ichimoku().baseLine());
+        assertThat(snapshot.close()).isGreaterThan(snapshot.ichimoku().cloudFloor());
+
+        StrategyIntentResult result = strategy.onBarIntent(context(primary, Map.of("D1", momentumBars("D1", 32, Instant.parse("2026-03-01T03:45:00Z"), true)),
+                position(PositionSide.LONG, 10, 0.50d, 0, 0, 3.0d, 0.2d)));
+
+        assertThat(result.tradeIntents()).as("diagnostics=%s", result.diagnostics()).isEmpty();
+    }
+
     private static TradeIntentStrategy intradayStrategy(Map<String, Object> overrides) {
         return (TradeIntentStrategy) new DoflamingoMomentumV5IntradayStrategyProvider()
                 .create(new StrategyParameters(compactParams(overrides)), null);
@@ -298,6 +472,11 @@ class DoflamingoMomentumV5StrategyProviderTest {
     private static TradeIntentStrategy swingStrategy(Map<String, Object> overrides) {
         return (TradeIntentStrategy) new DoflamingoMomentumV5SwingStrategyProvider()
                 .create(new StrategyParameters(compactParams(overrides)), null);
+    }
+
+    private static DoflamingoMomentumV5Parameters swingParameters(Map<String, Object> overrides) {
+        var validation = new DoflamingoMomentumV5SwingStrategyProvider().validate(new StrategyParameters(compactParams(overrides)));
+        return DoflamingoMomentumV5Parameters.swing(validation.effectiveParameters());
     }
 
     private static Map<String, Object> compactParams(Map<String, Object> overrides) {
@@ -414,6 +593,38 @@ class DoflamingoMomentumV5StrategyProviderTest {
         return bars;
     }
 
+    private static List<BarEvent> appendAdverseBars(List<BarEvent> source, int count, boolean againstLong) {
+        List<BarEvent> bars = new ArrayList<>(source);
+        for (int offset = 0; offset < count; offset++) {
+            BarEvent previous = bars.getLast();
+            double previousClose = previous.ohlcv().close().doubleValue();
+            double close = againstLong ? Math.max(1.0d, previousClose * 0.45d - offset * 5.0d) : previousClose * 1.55d + offset * 5.0d;
+            double open = againstLong ? previousClose - 2.0d : previousClose + 2.0d;
+            double high = Math.max(open, close) + 0.80d;
+            double low = Math.min(open, close) - 0.80d;
+            bars.add(bar(bars.size(), previous.timeframe(), source.getFirst().occurredAt(), open, high, low, close, BigDecimal.valueOf(2600L + offset * 100L)));
+        }
+        return bars;
+    }
+
+    private static List<BarEvent> appendBaselineOnlyBreakBars(List<BarEvent> source, int count, Map<String, Object> overrides) {
+        DoflamingoMomentumV5Parameters params = swingParameters(overrides);
+        List<BarEvent> bars = new ArrayList<>(source);
+        for (int offset = 0; offset < count; offset++) {
+            DoflamingoMomentumV5IndicatorMath.MarketSnapshot snapshot = DoflamingoMomentumV5IndicatorMath.snapshot(bars, params)
+                    .orElseThrow();
+            double cloudFloor = snapshot.ichimoku().cloudFloor();
+            double baseLine = snapshot.ichimoku().baseLine();
+            double close = cloudFloor + ((baseLine - cloudFloor) * 0.45d);
+            double previousClose = bars.getLast().ohlcv().close().doubleValue();
+            double open = Math.max(close + 0.35d, previousClose - snapshot.safeAtr() * 0.15d);
+            double high = Math.max(open, close) + 0.40d;
+            double low = Math.min(open, close) - 0.20d;
+            bars.add(bar(bars.size(), bars.getLast().timeframe(), source.getFirst().occurredAt(), open, high, low, close, BigDecimal.valueOf(2400L + offset * 100L)));
+        }
+        return bars;
+    }
+
     private static BarEvent bar(
             int index,
             String timeframe,
@@ -449,5 +660,13 @@ class DoflamingoMomentumV5StrategyProviderTest {
 
     private static BigDecimal decimal(double value) {
         return BigDecimal.valueOf(value).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal evidenceDecimal(List<String> evidence, String prefix) {
+        return evidence.stream()
+                .filter(value -> value.startsWith(prefix))
+                .map(value -> new BigDecimal(value.substring(prefix.length())))
+                .findFirst()
+                .orElseThrow();
     }
 }
